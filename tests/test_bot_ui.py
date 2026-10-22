@@ -8,6 +8,8 @@ and an emoji reaction is the fastest route to approve or abort.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from conftest import FakeAPI
 from test_delivery import CHAT, FakeTelegram, build_bridge
@@ -15,7 +17,7 @@ from test_delivery import CHAT, FakeTelegram, build_bridge
 from bridgekit import commands as C
 from bridgekit import keyboards
 from bridgekit.api import ApiError
-from bridgekit.telegram import ALLOWED_UPDATES, Telegram
+from bridgekit.telegram import Telegram
 
 # ------------------------------------------------------------- reactions
 
@@ -466,9 +468,11 @@ def test_publish_failures_do_not_raise(monkeypatch):
     assert tg.set_menu_button("42") is False
 
 
-def test_get_updates_asks_for_reactions_with_the_batch():
-    """Without allowed_updates containing message_reaction, Telegram never
-    delivers reactions and the feature looks broken everywhere."""
+def test_get_updates_asks_for_reactions_on_the_wire():
+    """Without allowed_updates containing message_reaction - and delivered as
+    ONE JSON-serialized parameter, not repeated keys - Telegram never
+    delivers reactions. Repeated keys read only the first pair ("message"),
+    which JSON-decodes to nothing and leaves the default set silently."""
     calls = []
 
     class Session:
@@ -492,8 +496,9 @@ def test_get_updates_asks_for_reactions_with_the_batch():
     tg._http = Session()
     tg.get_updates(7, timeout=1)
     params = calls[0]
-    assert "message_reaction" in params["allowed_updates"]
-    assert params["allowed_updates"] == tuple(ALLOWED_UPDATES)
+    assert params["allowed_updates"] == json.dumps(
+        ["message", "edited_message", "callback_query", "message_reaction"]
+    )
     assert params["offset"] == 7
 
 

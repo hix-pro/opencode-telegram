@@ -10,6 +10,7 @@ window rather than relying on the server to bounce us.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Iterable
@@ -95,9 +96,13 @@ class Telegram:
     ) -> list[dict]:
         params: dict = {"offset": offset, "timeout": timeout}
         if allowed_updates is not None:
-            # Requests encodes a tuple as repeated keys, which is how the
-            # Bot API reads sets in a query string.
-            params["allowed_updates"] = tuple(allowed_updates)
+            # Must be a JSON-serialized list in ONE parameter. Requests would
+            # happily encode a tuple as repeated query keys, but the Bot API
+            # server reads only the first pair, then tries to JSON-decode
+            # "message" - which fails, resets nothing, and silently leaves
+            # the default set (no reactions). The official server source is
+            # unambiguous about this.
+            params["allowed_updates"] = json.dumps(list(allowed_updates))
         resp = self._http.get(
             self.base + "/getUpdates",
             params=params,
@@ -108,7 +113,9 @@ class Telegram:
                 "Conflict: another instance is polling this bot token. Stop the other process."
             )
         resp.raise_for_status()
-        return resp.json().get("result", [])
+        body = resp.json()
+        result = body.get("result", [])
+        return result if isinstance(result, list) else []
 
     # ----------------------------------------------------------------- writes
 
