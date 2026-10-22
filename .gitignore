@@ -1,0 +1,21 @@
+# Secrets and environment
+.env
+.env.*
+!.env.example
+
+# Runtime state and logs
+.state.json
+.session.json
+bridge.log
+bridge.log.*
+*.log
+
+# Caches and transient data
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.attachments/
+
+# Local snapshots with credential copies
+.backup/
+backups/
