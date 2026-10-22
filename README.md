@@ -243,6 +243,14 @@ Only allow-listed people in allow-listed chats count, so a shared chat is not
 opened to whoever finds the bot. Only a newly *added* reaction acts: removing
 an emoji never repeats anything, and any other emoji is ignored.
 
+### Editing a sent message
+
+Edit a message you sent (fix a typo, refine the ask) and the new wording is
+resent as a fresh prompt - the chat history doubles as the queue. The
+bridge's own message edits never trigger this, and editing a slash command
+does nothing: it already ran, and re-running one because its wording changed
+is a surprise, not a service.
+
 ### Help
 
 | Command | Effect |

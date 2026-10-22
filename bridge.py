@@ -436,12 +436,17 @@ class Bridge:
             self._handle_reaction(update["message_reaction"])
             return
 
-        message = update.get("message")
+        message = update.get("message") or update.get("edited_message")
         if not message:
             return
         chat_id = str((message.get("chat") or {}).get("id", ""))
         if chat_id not in self.config.allowed_chats:
             # Not on the allow-list: ignore completely, no error, no hint.
+            return
+
+        if "message" not in update:
+            # Telegram reposted an edit (to a user or bot message).
+            self._handle_edited_message(chat_id, message)
             return
 
         # A file, caption, or voice note instead of a command.
@@ -489,6 +494,28 @@ class Bridge:
                 handler(chat_id, argument)
             except Exception:
                 log.exception("Callback %s failed", action)
+
+    def _handle_edited_message(self, chat_id: str, message: dict) -> None:
+        """Editing a sent message resends its text as a fresh prompt.
+
+        The chat history doubles as the queue: correct a typo, refine an
+        ask, and the new wording becomes a new turn without retyping.
+        The bridge's own edits never count - those are progress updates -
+        and slash commands are ignored, because they already ran when
+        first sent and re-running one because its wording changed is more
+        surprise than service.
+        """
+        sender = message.get("from") or {}
+        if sender.get("is_bot"):
+            return
+        reactor = str(sender.get("id", "") or chat_id)
+        if reactor not in self.config.allowed_chats:
+            return
+        text = (message.get("text") or "").strip()
+        if not text or text.startswith("/"):
+            return
+        self.send(chat_id, "Resending your edit as a new prompt.")
+        self.work.put((chat_id, text, None))
 
     # ---------------------------------------------------------- attachments
 

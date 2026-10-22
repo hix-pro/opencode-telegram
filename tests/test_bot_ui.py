@@ -126,6 +126,64 @@ def test_ignore_unknown_update_types(tmp_path):
     assert bridge.telegram.sent == []
 
 
+# ---------------------------------------------------------------- edits
+
+
+def edited(text=None, user=CHAT, chat_id=CHAT, is_bot=False):
+    """A Bot API edited_message update."""
+    return {
+        "edited_message": {
+            "chat": {"id": int(chat_id)},
+            "message_id": 9,
+            "from": {"id": int(user), "is_bot": is_bot},
+            "date": 1,
+            "edit_date": 2,
+            "text": text,
+        }
+    }
+
+
+def test_editing_a_sent_message_resends_it_as_a_prompt(tmp_path):
+    """The chat history doubles as the prompt queue."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("make the header red instead"))
+    assert bridge.work.get(timeout=1) == (CHAT, "make the header red instead", None)
+    assert "Resending" in bridge.telegram.sent[-1]
+
+
+def test_edits_without_text_do_nothing(tmp_path):
+    """A caption-only edit has no words to resend."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited(text=None))
+    assert bridge.work.empty() and bridge.telegram.sent == []
+
+
+def test_a_slash_command_edit_never_reruns(tmp_path):
+    """Commands ran once when sent; re-running on rewording is a surprise."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("/new  corrected typo"))
+    assert bridge.work.empty() and bridge.telegram.sent == []
+
+
+def test_the_bridge_editing_itself_never_reprompts(tmp_path):
+    """Progress-message edits come back as edited_message; ignore them."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("make the header red instead", is_bot=True))
+    assert bridge.work.empty() and bridge.telegram.sent == []
+
+
+def test_a_strangers_edit_is_ignored(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("sneaky prompt", user=999999))
+    assert bridge.work.empty() and bridge.telegram.sent == []
+
+
+def test_an_edit_from_a_foreign_chat_is_ignored(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("sneaky prompt", chat_id=777777, user=777777))
+    assert bridge.work.empty() and bridge.telegram.sent == []
+
+
 # ---------------------------------------------------------------- publish
 
 

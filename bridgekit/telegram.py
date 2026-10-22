@@ -28,8 +28,14 @@ EDIT_MEMORY_SECONDS = 600.0
 
 # The update types the bridge consumes. message_reaction is not in
 # Telegram's default set, so reactions would silently never arrive
-# without asking for it here.
-ALLOWED_UPDATES = ("message", "callback_query", "message_reaction")
+# without asking for it here; edited_message carries the edit-a-sent-
+# message re-prompt.
+ALLOWED_UPDATES = (
+    "message",
+    "edited_message",
+    "callback_query",
+    "message_reaction",
+)
 
 # One command list per bot: autocomplete stops being offered past these.
 MAX_COMMANDS = 100
