@@ -3,6 +3,12 @@
 Deliberately small: ``every 30m``, ``hourly``, and ``daily 09:00``. No cron
 parser, because a schedule you cannot read is a schedule you cannot debug.
 
+Daily schedules match by *boundary*, not by the clock minute: a tick at 09:15
+still counts as today's 09:00 run owed, so downtime cannot skip a whole day,
+while one that already fired stays fired, so a leftover minute cannot fire
+twice. Recording happens inside :meth:`Schedule.due`, which makes it
+idempotent for the same ``now``, and :meth:`ScheduleStore.due` a plain filter.
+
 A scheduler thread ticks once a minute and hands matching prompts to the same
 queue the chat uses, so scheduled work runs through exactly the same path -
 streaming, permissions, abort, everything.
@@ -13,6 +19,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 MINUTE = 60
 HOUR = 3600
@@ -44,16 +51,44 @@ class Schedule:
         return f"every {self.interval // MINUTE}m"
 
     def due(self, now: float) -> bool:
-        if self.last_run and now - self.last_run < self.interval:
-            return False
+        """One run owed at *now*, recorded as it fires.
+
+        Because recording happens here, calling this twice with the same
+        *now* fires exactly once - previously it fired twice unless the
+        store wrapper happened to sit in between, and a daily schedule
+        whose 09:00 minute was missed (suspend, downtime, a slow tick)
+        silently skipped the whole rest of the day.
+        """
         if self.at_hour is None:
-            return True
-        local = time.localtime(now)
-        return (
-            local.tm_hour == self.at_hour
-            and local.tm_min == self.at_minute
-            and (not self.last_run or now - self.last_run > self.interval - 60)
+            if self.last_run and now - self.last_run < self.interval:
+                return False
+        else:
+            boundary = self._last_boundary(now)
+            # This occurrence predates the schedule: a job added at 10:00 for
+            # "daily 09:00" must wait until tomorrow, not fire immediately for
+            # a morning that ended before it existed.
+            if not boundary or boundary <= self.created:
+                return False
+            if self.last_run >= boundary:
+                return False
+        self.last_run = now
+        return True
+
+    def _last_boundary(self, now: float) -> float:
+        """The most recent scheduled instant at or before *now*.
+
+        Computed in local time so a 09:00 target is 09:00 on the user's
+        clock rather than 09:00 UTC; a DST-change day shifts the boundary
+        with the rest of the clock, which is the natural reading of
+        "daily 09:00".
+        """
+        local = datetime.fromtimestamp(now)
+        hit = local.replace(
+            hour=self.at_hour or 0, minute=self.at_minute or 0, second=0, microsecond=0
         )
+        if hit.timestamp() > now:
+            hit -= timedelta(days=1)
+        return hit.timestamp()
 
     def to_dict(self) -> dict:
         return {
@@ -139,11 +174,9 @@ class ScheduleStore:
         return [s for s in self.items if s.chat_id == chat_id]
 
     def due(self, now: float | None = None) -> list[Schedule]:
+        """Schedules owed a run at *now*; each one records itself as it fires."""
         now = now if now is not None else time.time()
-        ready = [s for s in self.items if s.due(now)]
-        for schedule in ready:
-            schedule.last_run = now
-        return ready
+        return [s for s in self.items if s.due(now)]
 
     def to_list(self) -> list[dict]:
         return [s.to_dict() for s in self.items]

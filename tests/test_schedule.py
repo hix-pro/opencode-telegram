@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import time
+from datetime import date, timedelta
 
 import pytest
 
-from bridgekit.schedule import DAY, HOUR, MINUTE, ScheduleStore, parse
+from bridgekit.schedule import DAY, HOUR, MINUTE, Schedule, ScheduleStore, parse
+
+
+def _moment(day_offset: int, hour: int, minute: int) -> float:
+    """A concrete local timestamp, independent of the wall clock.
+
+    The suite can run at any second of the day, so tests pin their own
+    boundaries instead of comparing against ``time.time()``.
+    """
+    day = date.today() + timedelta(days=day_offset)
+    return time.mktime((day.year, day.month, day.day, hour, minute, 0, 0, 0, -1))
 
 
 def test_parse_every_minutes():
@@ -55,6 +66,106 @@ def test_due_only_once_per_interval():
     assert len(store.due(now + 31 * MINUTE)) == 1, "fires once the interval passes"
 
 
+def test_daily_fires_once_at_the_same_instant():
+    """Asking twice at the same *now* must not run the job twice.
+
+    This failed before: :meth:`Schedule.due` was a pure predicate, so two
+    calls with the same timestamp both agreed the job was owed and the
+    scheduler - ticking every minute - would have submitted the prompt
+    twice.
+    """
+    schedule = Schedule(
+        id="x",
+        chat_id="42",
+        spec="daily 09:00",
+        prompt="report",
+        interval=DAY,
+        at_hour=9,
+        at_minute=0,
+        created=_moment(-2, 9, 0),
+    )
+    target = _moment(0, 9, 0)
+    if target > _moment(-2, 9, 0):  # trivially true; keeps lint honest
+        assert schedule.due(target)
+        assert schedule.due(target) is False
+    assert schedule.last_run == target
+
+
+def test_daily_catches_up_after_downtime():
+    """A 09:00 missed while down must fire on the next tick, not skip the day.
+
+    The machine suspends at 08:55 and wakes at 09:30; previously the exact
+    minute-match saw 09:30 instead of 09:00 and the job silently never ran
+    that day.
+    """
+    yesterday9 = _moment(-1, 9, 0)
+    today9 = _moment(0, 9, 0)
+    schedule = Schedule(
+        id="x",
+        chat_id="42",
+        spec="daily 09:00",
+        prompt="report",
+        interval=DAY,
+        at_hour=9,
+        at_minute=0,
+        created=_moment(-2, 12, 0),
+        last_run=yesterday9,
+    )
+    assert schedule.due(today9 + 1800), "a late 09:00 run is still owed today"
+    assert schedule.due(today9 + 1800) is False
+    assert schedule.due(today9 + 24 * HOUR - 60) is False, "but only once"
+
+
+def test_daily_does_not_refire_for_yesterday_when_early_today():
+    """Sitting at 08:00: yesterday's run already counts; today's has not come."""
+    schedule = Schedule(
+        id="x",
+        chat_id="42",
+        spec="daily 09:00",
+        prompt="report",
+        interval=DAY,
+        at_hour=9,
+        at_minute=0,
+        created=_moment(-1, 8, 0),
+        last_run=_moment(-1, 9, 0),
+    )
+    assert schedule.due(_moment(0, 8, 0)) is False
+
+
+def test_fresh_daily_ignores_a_morning_that_already_ended():
+    """A schedule added at 10:00 must wait for tomorrow's 09:00.
+
+    Previously it could fire immediately for a boundary in the past, running
+    the prompt once at creation time for no user-visible reason.
+    """
+    schedule = Schedule(
+        id="x",
+        chat_id="42",
+        spec="daily 09:00",
+        prompt="report",
+        interval=DAY,
+        at_hour=9,
+        at_minute=0,
+        created=_moment(0, 10, 0),
+    )
+    assert schedule.due(_moment(0, 10, 30)) is False
+    assert schedule.due(_moment(1, 9, 30)) is True, "tomorrow's run is owed"
+
+
+def test_store_daily_fires_once_per_instant():
+    """The store wrapper is a filter now; the idempotency lives in the item."""
+    store = ScheduleStore()
+    store.add("42", "daily 09:00", "report")
+    items = store.items
+    target = _moment(1, 9, 0)
+    for schedule in items:
+        schedule.created = _moment(0, 9, 0)
+    assert len(store.due(target)) == 1
+    assert store.due(target) == []
+    assert len(store.due(target + 60)) == 0, "still done for this minute"
+    assert len(store.due(_moment(2, 9, 30))) == 1, "next day's run fires"
+
+
 def test_daily_waits_for_the_right_minute():
     store = ScheduleStore()
     schedule = store.add("42", "daily 09:00", "report")
@@ -62,10 +173,8 @@ def test_daily_waits_for_the_right_minute():
     now = time.time()
     assert store.due(now) == [], "must not fire at the wrong time"
 
-    import time as _time
-
-    today = _time.localtime(now)
-    target = _time.mktime((today.tm_year, today.tm_mon, today.tm_mday, 9, 0, 0, 0, 0, -1))
+    today = time.localtime(now)
+    target = time.mktime((today.tm_year, today.tm_mon, today.tm_mday, 9, 0, 0, 0, 0, -1))
     if target > now:
         assert schedule.due(target)
         assert schedule.due(target) is False, "only once on the day"
