@@ -3,9 +3,10 @@
 Long polling only. Plain text everywhere: HTML would force escaping on every
 snippet the agent emits, and the agent's own output is not under our control.
 
-Edits are rate limited. Telegram allows roughly 30 edits per minute per chat
-and answers the overflow with 429, so :class:`Telegram` keeps its own throttle
-window rather than relying on the server to bounce us.
+Edits are rate limited. Telegram answers overflow with 429 and
+``parameters.retry_after``; :class:`Telegram` keeps its own minimum spacing
+*and* widens it to exactly the window the server names, so a penalty from one
+message per chat applies to every following edit until it expires.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ log = logging.getLogger("bridge.telegram")
 
 # Telegram's own limits.
 MIN_EDIT_INTERVAL = 1.2
-EDIT_BURST = 25
 
 # How long throttle bookkeeping is kept per message.
 EDIT_MEMORY_SECONDS = 600.0
@@ -84,7 +84,10 @@ class Telegram:
         # counted rather than left to the debug log.
         self.edit_failures = 0
         self.rate_limited = 0
-        self._penalty = 0.0
+        # Monotonic deadline until further edits wait: whenever the server
+        # answers 429 with parameters.retry_after, the window widens to that
+        # exact value. Per client (one chat's edits share the chat's limit),
+        # not per message.
         self._penalty_until = 0.0
 
     # ------------------------------------------------------------------ reads
@@ -157,6 +160,9 @@ class Telegram:
                 # used to escape as ValueError and abort the whole turn
                 # instead of simply waiting its turn.
                 retry_after = _safe_retry_after(resp, default=5.0)
+                # The sends block right away, but edits of the same chat
+                # must also hold off for the window the server named.
+                self._record_penalty(retry_after)
                 log.warning("Rate limited; sleeping %ss", retry_after)
                 time.sleep(retry_after)
                 continue
@@ -182,6 +188,11 @@ class Telegram:
         """
         key = f"{chat_id}:{message_id}"
         now = time.monotonic()
+        # While the server's named retry_after window is open, do not even
+        # hit the wire: a POST there just earns another 429 and re-arms the
+        # window. The _last_edit gate below keeps the ordinary spacing.
+        if not force and now < self._penalty_until:
+            return False
         last = self._last_edit.get(key, 0.0)
         if not force and now - last < self.effective_interval():
             return False
@@ -216,8 +227,9 @@ class Telegram:
         if resp.status_code == 429:
             retry_after = _safe_retry_after(resp)
             self.rate_limited += 1
-            self._penalty = max(self._penalty, float(retry_after))
-            self._penalty_until = now + float(retry_after)
+            # The old deadline started from a timestamp captured before the
+            # request - a slow request ate into the penalty. Compute it now.
+            self._record_penalty(retry_after)
             log.info("Edit rate limited; waiting %ss before the next attempt", retry_after)
             return False
         if resp.status_code >= 400:
@@ -238,14 +250,23 @@ class Telegram:
         cutoff = time.monotonic() - EDIT_MEMORY_SECONDS
         self._last_edit = {k: v for k, v in self._last_edit.items() if v >= cutoff}
 
+    def _record_penalty(self, retry_after: float) -> None:
+        """Widen the no-edit window to the server's own retry_after."""
+        after = time.monotonic() + max(0.1, float(retry_after))
+        self._penalty_until = max(self._penalty_until, after)
+
     def effective_interval(self) -> float:
-        """Current edit spacing, widened while the server is throttling us."""
-        if not self._penalty_until:
+        """Current edit spacing, widened to the server's retry_after while
+        it is throttling us.
+
+        A 429 with retry_after=12 buys twelve seconds of silence, not twice
+        the usual 1.2s: the server's own clock is the honest upper bound,
+        and every edit in the chat shares the chat-wide limit.
+        """
+        now = time.monotonic()
+        if now >= self._penalty_until:
             return self.edit_interval
-        if time.monotonic() >= self._penalty_until:
-            self._penalty_until = 0.0
-            return self.edit_interval
-        return max(self.edit_interval, self.edit_interval * 2)
+        return max(self.edit_interval, self._penalty_until - now)
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         payload: dict = {"callback_query_id": callback_id}

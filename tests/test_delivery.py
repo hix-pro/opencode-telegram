@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+import bridgekit.telegram
 from bridgekit.config import Config
 from bridgekit.keyboards import Router
 from bridgekit.policy import Policy
@@ -251,18 +252,47 @@ def test_rate_limited_edit_reports_failure_instead_of_raising():
 
 
 def test_rate_limit_widens_the_edit_interval():
+    """The server's retry_after is the honest bound: with retry_after=5 the
+    spacing widens to about five seconds, not to the old fixed 'twice the
+    base interval'."""
     client = make_client(429, {"parameters": {"retry_after": 5}})
     client.edit("42", 1, "text", force=True)
-    assert client.effective_interval() > client.edit_interval
+    assert client.effective_interval() >= client.edit_interval + 3
 
 
 def test_rate_limit_interval_relaxes_once_the_window_passes():
+    """The widened spacing is not sticky: once the window the server named
+    has closed, the ordinary interval resumes."""
     client = make_client(429, {"parameters": {"retry_after": 0.2}})
     client.edit("42", 1, "text", force=True)
-    widened = client.effective_interval()
     time.sleep(0.25)
     assert client.effective_interval() == client.edit_interval
-    assert widened > client.edit_interval
+
+
+def test_a_windowed_edit_never_hits_the_wire():
+    """A non-forced edit inside the server's window must not POST: the
+    request would only earn another 429 and re-arm the window."""
+    client = make_client(429, {"parameters": {"retry_after": 5}})
+    client.edit("42", 1, "text", force=True)  # arms the window
+    client._http.posts.clear()
+
+    assert client.edit("42", 1, "text") is False
+    assert client._http.posts == [], "the windowed edit must not POST"
+
+
+def test_the_send_path_records_the_penalty_for_edits_too(monkeypatch):
+    """A 429 on sendMessage also holds the edits of that chat: the refresh
+    stream would have ignored the window the send path paid for."""
+    monkeypatch.setattr(bridgekit.telegram.time, "sleep", lambda seconds: None)
+    client = make_client(429, {"parameters": {"retry_after": 5}})
+
+    with pytest.raises(TelegramError):
+        client._send_chunk("42", "hello")
+
+    assert len(client._http.posts) == 4, "the send retry loop still runs"
+    assert client.effective_interval() > client.edit_interval, (
+        "the send path must arm the same edit window"
+    )
 
 
 def test_rejected_edit_is_counted():
