@@ -443,7 +443,12 @@ not installed, so the hook degrades gracefully rather than failing.
 Every commit is guarded: `core.hooksPath` points at the tracked `hooks/`
 directory, and the pre-commit hook runs ruff, mypy, bandit and the offline
 suite. A red gate cannot land; bypass in emergencies with
-`git commit --no-verify`.
+`git commit --no-verify`. It travels with the repo but not with git's
+default wiring - arm it in a fresh clone with:
+
+```bash
+git config core.hooksPath hooks
+```
 
 Layout:
 
