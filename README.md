@@ -384,7 +384,10 @@ Layout:
 | `bridgekit/formatting.py` | Render helpers |
 | `bridgekit/schedule.py` | Recurring schedules |
 | `bridgekit/selftest.py` | End-to-end checks behind `/selftest` |
-| `.backup/bridge-legacy.py` | The single-session version this replaced |
+| `backup-essential.sh` | Copies credentials, envs and source to `~/backups/essential` |
+
+Legacy snapshots (credential copies included) live outside the repository at
+`~/backups/legacy-bridge-snapshots/`, where a `git clean` cannot touch them.
 
 Adding a command is one decorated function in `commands.py`:
 
