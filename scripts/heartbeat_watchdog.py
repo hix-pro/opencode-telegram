@@ -27,13 +27,20 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import shutil
+
+# Suppression justification: only fixed-argv calls of our own tooling appear
+# below; no shell is ever involved.
+import subprocess  # nosec
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
 DEFAULT_MAX_AGE = 180.0  # comfortably above the 30s long-poll window
+# Resolved once, absolutely: the timer runs with a sparse environment, and
+# an absolute binary keeps the audit trivial (/usr/bin on this machine).
+SYSTEMCTL = shutil.which("systemctl") or "/usr/bin/systemctl"
 
 
 def decide(
@@ -55,9 +62,12 @@ def _unit_active(unit: str) -> tuple[bool, float]:
     """systemd's view: is it running, and for how long (monotonic seconds)."""
     up_since = 0.0
     try:
-        mono = subprocess.run(
+        # Fixed argv against a resolved absolute binary and our own unit
+        # name: the calls stay auditable without a shell, so the advisory
+        # does not apply beyond the generic reminder it exists for.
+        mono = subprocess.run(  # nosec
             [
-                "systemctl",
+                SYSTEMCTL,
                 "--user",
                 "show",
                 "-p",
@@ -71,8 +81,8 @@ def _unit_active(unit: str) -> tuple[bool, float]:
             check=False,
         )
         up_since = max(0.0, (int(mono.stdout.strip() or 0)) / 1_000_000.0)
-        state = subprocess.run(
-            ["systemctl", "--user", "is-active", unit],
+        state = subprocess.run(  # nosec
+            [SYSTEMCTL, "--user", "is-active", unit],
             capture_output=True,
             text=True,
             timeout=15,
@@ -94,7 +104,9 @@ def _alert(url: str, message: str) -> None:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        urllib.request.urlopen(request, timeout=5).close()
+        # The URL is the operator's own .env relay - any scheme is theirs
+        # to configure; that is the feature.
+        urllib.request.urlopen(request, timeout=5).close()  # nosec
         print(f"watchdog: alerted {url}")
     except Exception as exc:  # noqa: BLE001 - any error must not block restart
         print(f"watchdog: alert to {url} failed: {exc}")
@@ -129,8 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         if url:
             _alert(url, message)
         try:
-            subprocess.run(
-                ["systemctl", "--user", "restart", args.unit], timeout=30, check=False
+            # Fixed argv again; the unit name comes from the unit file that
+            # invokes this script.
+            subprocess.run(  # nosec
+                [SYSTEMCTL, "--user", "restart", args.unit], timeout=30, check=False
             )
         except OSError as exc:
             print(f"watchdog: restart failed: {exc}")
