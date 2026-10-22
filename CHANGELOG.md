@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.2.0 — 2026-10-22
+
+The UI round: everything acquired a button.
+
+### Added
+
+- **Persistent main menu** — an `is_persistent` reply keyboard (Status ·
+  Sessions · New · Abort · Help) attaches at startup; a tap is canonicalised
+  into the command it stands for, so tap and type behave identically. Any
+  client can collapse it locally.
+- **Session switcher** — `/sessions` renders a Switch row per session, resolved
+  through the existing `use` callback, which now confirms the switch in the
+  chat instead of succeeding silently.
+- **Per-request reactions** — reacting on a pending permission card approves
+  (👍) or rejects (👎/🛑) *just that request*. On any other message, reactions
+  keep their chat-wide meaning (approve-all / abort turn).
+- **Prompt macros** — `/macro name prompt` records a standing prompt in
+  `.state.json`; `/name` expands it (explicit `{args}` slot or appended tail)
+  and queues it like any prompt, so it streams, aborts and asks for
+  permissions like everything else.
+
+### Housekeeping
+
+- Poll-loop tests drive `poll_loop` itself through realistic mixed batches
+  (message + reaction + edit, offsets advancing and persisting between polls).
+- `backup-essential.sh` writes `bridge-history.bundle` alongside the essential
+  copies, so the audit history survives disk loss (verified with
+  `git bundle verify`).
+- README documents the pre-commit hook, macros, the menu and reaction scoping.
+
+### Known limitations (unchanged)
+
+- The OpenCode **server** still reaps shell commands after about a second, and
+  the server fs endpoints still ignore the directory parameter; both are
+  tracked by live tests that fail loudly if the server behaviour changes.
+
 ## v2.1.0 — 2026-10-22
 
 The audit round. Every defect found has a regression test; every feature is
