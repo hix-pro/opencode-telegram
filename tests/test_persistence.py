@@ -148,7 +148,7 @@ def test_a_failed_download_leaves_no_partial_file(tmp_path):
     """A truncated attachment would be read by the agent as if it were whole."""
     import requests
 
-    from bridgekit.telegram import Telegram
+    from bridgekit.telegram import Telegram, TelegramError
 
     class MidStream:
         status_code = 200
@@ -176,8 +176,12 @@ def test_a_failed_download_leaves_no_partial_file(tmp_path):
     client._http = type("S", (), {"get": staticmethod(fake_get)})()
     destination = tmp_path / "b.png"
 
-    with pytest.raises(requests.exceptions.ConnectionError):
+    # The transport death now surfaces as a user-safe TelegramError instead of
+    # the raw requests exception, whose text embeds the tokened request URL
+    # and used to land in the chat. The partial-file cleanup is unchanged.
+    with pytest.raises(TelegramError) as caught:
         client.download("f1", destination)
+    assert "token" not in str(caught.value)
     assert not destination.exists(), "partial file must be cleaned up"
 
 

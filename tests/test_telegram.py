@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from bridgekit.telegram import split_message
+import pytest
+
+from bridgekit.telegram import Telegram, split_message
 
 
 def test_short_text_is_one_chunk():
@@ -46,3 +48,64 @@ def test_no_empty_chunks_are_produced():
     text = "\n" * 500 + "end"
     chunks = split_message(text, 50)
     assert all(c for c in chunks)
+
+
+# ---------------------------------------------------------------- redaction
+
+
+def test_redact_strips_the_token():
+    tg = Telegram("98765")
+    assert (
+        tg.redact("Max retries exceeded with url: /bot98765/getUpdates refused")
+        == "Max retries exceeded with url: /bot***/getUpdates refused"
+    )
+
+
+def test_a_download_transport_error_names_no_token(tmp_path):
+    """download() failures are posted straight into the chat: the raw
+    requests text used to carry the whole token there."""
+    from bridgekit.telegram import TelegramError
+
+    class DeadSession:
+        def get(self, url, **kwargs):
+            raise ConnectionError(
+                "Max retries exceeded with url: /file/bot98765/telegram "
+                "(Caused by NameResolutionError)"
+            )
+
+    tg = Telegram("98765")
+    tg._http = DeadSession()
+    destination = tmp_path / "report.pdf"
+
+    with pytest.raises(TelegramError) as caught:
+        tg.download("file_x", destination)
+
+    assert "98765" not in str(caught.value)
+
+
+def test_a_transfer_death_leaves_no_partial_file(tmp_path):
+    """A connection that dies mid-body must not publish a truncated file,
+    and the error must not carry the token."""
+    from types import SimpleNamespace
+
+    from bridgekit.telegram import TelegramError
+
+    class TransferDeath:
+        def get(self, url, **kwargs):
+            if url.endswith("/getFile"):
+                return SimpleNamespace(
+                    status_code=200,
+                    text="",
+                    json=lambda: {"result": {"file_path": "docs/report.pdf"}},
+                )
+            raise ConnectionError("connection reset by peer")
+
+    tg = Telegram("98765")
+    tg._http = TransferDeath()
+    destination = tmp_path / "report.pdf"
+
+    with pytest.raises(TelegramError) as caught:
+        tg.download("file_x", destination)
+
+    assert not destination.exists(), "a truncated attachment must not survive"
+    assert "98765" not in str(caught.value)

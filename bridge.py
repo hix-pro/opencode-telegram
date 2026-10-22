@@ -368,7 +368,9 @@ class Bridge:
         try:
             self.telegram.send(chat_id, text, reply_markup=markup)
         except (TelegramError, OSError) as exc:
-            log.warning("Could not deliver message to %s: %s", chat_id, exc)
+            log.warning(
+                "Could not deliver message to %s: %s", chat_id, self.telegram.redact(exc)
+            )
 
     def context(self, chat_id: str) -> commands.Context:
         return commands.Context(
@@ -466,7 +468,7 @@ class Bridge:
                 time.sleep(backoff)
                 continue
             except OSError as exc:
-                log.warning("Telegram poll failed: %s", exc)
+                log.warning("Telegram poll failed: %s", self.telegram.redact(exc))
                 time.sleep(5)
                 continue
 
@@ -834,7 +836,9 @@ class Bridge:
                 try:
                     message_id = self.telegram.send(chat_id, progress.render())
                 except (TelegramError, OSError) as exc:
-                    log.warning("Could not post the live placeholder: %s", exc)
+                    log.warning(
+                        "Could not post the live placeholder: %s", self.telegram.redact(exc)
+                    )
                     message_id = None
 
             # Remember the in-flight turn so a bridge restart can report it
@@ -1224,7 +1228,9 @@ class Bridge:
                 chat_id, body, reply_markup=keyboards.permission_buttons(request_id)
             )
         except (TelegramError, OSError) as exc:
-            log.warning("Could not ask about permission %s: %s", request_id, exc)
+            log.warning(
+                "Could not ask about permission %s: %s", request_id, self.telegram.redact(exc)
+            )
             return False
         self._perm_cards[(chat_id, int(message_id))] = request_id
         log.info("Asked chat %s about permission %s (%s)", chat_id, request_id, message_id)

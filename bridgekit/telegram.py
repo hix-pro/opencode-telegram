@@ -74,6 +74,7 @@ class Telegram:
     ) -> None:
         self.base = f"https://api.telegram.org/bot{token}"
         self.file_base = f"https://api.telegram.org/file/bot{token}"
+        self._token = token
         self.max_chunk = max_chunk
         self.timeout = timeout
         self.edit_interval = edit_interval
@@ -87,6 +88,17 @@ class Telegram:
         self._penalty_until = 0.0
 
     # ------------------------------------------------------------------ reads
+
+    def redact(self, value: object) -> str:
+        """Exception/URL text safe to log or send to a chat.
+
+        Transport errors from requests embed the request URL, and every
+        Telegram URL carries the bot token between ``bot`` and the method
+        name. Anything that escapes an ``except`` and may reach a log file
+        or the chat goes through this first.
+        """
+        text = str(value)
+        return text.replace(self._token, "***") if self._token else text
 
     def get_updates(
         self,
@@ -193,8 +205,9 @@ class Telegram:
             # would take the whole turn down with it. OSError rather than
             # requests.RequestException because the built-in ConnectionError
             # is not a subclass of it, and requests errors subclass IOError.
+            # The excuse text embeds the tokened request URL - redact it.
             self.edit_failures += 1
-            log.warning("editMessageText transport error: %s", exc)
+            log.warning("editMessageText transport error: %s", self.redact(exc))
             return False
         finally:
             self._last_edit[key] = time.monotonic()
@@ -243,7 +256,7 @@ class Telegram:
                 self.base + "/answerCallbackQuery", json=payload, timeout=self.timeout
             )
         except requests.RequestException as exc:
-            log.debug("answerCallbackQuery failed: %s", exc)
+            log.debug("answerCallbackQuery failed: %s", self.redact(exc))
 
     # ------------------------------------------------------- bot cosmetics
 
@@ -285,7 +298,7 @@ class Telegram:
             # OSError rather than RequestException alone: the built-in
             # ConnectionError is not a subclass of it, and a network error
             # must not propagate into startup.
-            log.warning("%s transport error: %s", method, exc)
+            log.warning("%s transport error: %s", method, self.redact(exc))
             return False
         if resp.status_code >= 400:
             log.warning("%s failed (%s): %s", method, resp.status_code, _safe_detail(resp))
@@ -295,10 +308,18 @@ class Telegram:
     # ------------------------------------------------------------------ files
 
     def download(self, file_id: str, destination: Path) -> Path:
-        """Fetch a Telegram file by id and write it to *destination*."""
-        resp = self._http.get(
-            self.base + "/getFile", params={"file_id": file_id}, timeout=self.timeout
-        )
+        """Fetch a Telegram file by id and write it to *destination*.
+
+        Transport errors are re-raised as a user-safe TelegramError: the raw
+        exception text embeds the tokened request URL, and this message is
+        posted straight into the chat.
+        """
+        try:
+            resp = self._http.get(
+                self.base + "/getFile", params={"file_id": file_id}, timeout=self.timeout
+            )
+        except (OSError, requests.exceptions.RequestException) as exc:
+            raise TelegramError("could not reach Telegram to look up that file") from exc
         if resp.status_code >= 400:
             raise TelegramError(f"getFile failed ({resp.status_code}): {resp.text[:160]}")
         file_path = (resp.json().get("result") or {}).get("file_path")
@@ -316,9 +337,12 @@ class Telegram:
                     for chunk in stream.iter_content(chunk_size=64 * 1024):
                         if chunk:
                             handle.write(chunk)
+        except (OSError, requests.exceptions.RequestException) as exc:
+            # A half-written attachment is worse than none, and a transport
+            # error mid-transfer must not carry the tokened URL into the chat.
+            destination.unlink(missing_ok=True)
+            raise TelegramError("the file transfer was interrupted") from exc
         except Exception:
-            # A half-written attachment is worse than none: the agent would
-            # read a truncated file and never know it was incomplete.
             destination.unlink(missing_ok=True)
             raise
         return destination
