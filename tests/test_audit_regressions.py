@@ -155,6 +155,7 @@ def build(tmp_path, telegram, api, **overrides):
 
 
 class StubEvents:
+    last_error = ""
     connected = True
     frames = 0
     reconnects = 0

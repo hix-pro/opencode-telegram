@@ -211,6 +211,7 @@ class FakeTelegram:
 
 
 class StubEvents:
+    last_error = ""
     connected = True
     frames = 0
     reconnects = 0

@@ -151,6 +151,58 @@ class _FakeStop:
         return False
 
 
+def test_repeated_drops_warn_once_then_go_quiet(monkeypatch, caplog):
+    """A server outage must not flood the log: one warning, then DEBUG detail.
+
+    During the outage every reconnect attempt used to log a WARNING with a
+    multi-line exception dump, 2 per minute, forever.
+    """
+    sleeps = []
+    monkeypatch.setattr(events.time, "sleep", lambda s: sleeps.append(s))
+
+    stream = events.EventStream("http://127.0.0.1:1", ("opencode", "pw"))
+
+    def always_fail(*args, **kwargs):
+        raise events.requests.ConnectionError("refused")
+
+    monkeypatch.setattr(events.requests, "get", always_fail)
+    stream._stop = _FakeStop(after=16)  # eight attempts: two checks each
+    with caplog.at_level(events.logging.DEBUG, logger="bridge.events"):
+        stream._run()
+
+    warnings = [r for r in caplog.records if r.levelno == events.logging.WARNING]
+    assert len(warnings) == 1, "exactly one warning for a short outage"
+    assert stream.reconnects == 8
+    assert stream.drops == 8
+    assert "refused" in stream.last_error
+    debug_notes = [r for r in caplog.records if r.levelno == events.logging.DEBUG]
+    assert len(debug_notes) == 7, "consecutive drops are counted, not lost"
+
+
+def test_reconnected_stream_reports_recovery(monkeypatch, caplog):
+    """A successful reconnect logs with the failure count and resets the tally."""
+    monkeypatch.setattr(events.time, "sleep", lambda s: None)
+
+    stream = events.EventStream("http://127.0.0.1:1", ("opencode", "pw"))
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise events.requests.ConnectionError("refused")
+        return FakeResponse([": keepalive"])
+
+    monkeypatch.setattr(events.requests, "get", flaky)
+    stream._stop = _FakeStop(after=4)  # two attempts
+    with caplog.at_level(events.logging.INFO, logger="bridge.events"):
+        stream._run()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("after 1 failed attempt" in m for m in messages)
+    assert stream.drops == 0
+    assert stream.last_error == ""
+
+
 def test_start_is_idempotent(monkeypatch, stream):
     started = []
     release = threading.Event()

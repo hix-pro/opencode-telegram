@@ -316,6 +316,7 @@ class Bridge:
             health=self.health_report(),
             on_permission_answered=self._requests.pop,
             schedules=self.schedules,
+            respond=lambda text: self.send(chat_id, text),
         )
 
     def health_report(self) -> dict:
@@ -334,6 +335,7 @@ class Bridge:
                 "connected": self.events.connected,
                 "frames": self.events.frames,
                 "reconnects": self.events.reconnects,
+                "last_error": self.events.last_error,
             },
             "telegram": {
                 "edit_failures": self.telegram.edit_failures,

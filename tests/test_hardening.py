@@ -48,6 +48,7 @@ class DeadServer:
 
 
 class StubEvents:
+    last_error = ""
     connected = False
     frames = 0
     reconnects = 0

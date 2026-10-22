@@ -65,6 +65,10 @@ class EventStream:
         self.last_event_at = 0.0
         self.reconnects = 0
         self.frames = 0
+        # Consecutive failures and the latest reason, so an outage is visible
+        # without flooding the log: page 1 tells the story, page 2+ is detail.
+        self.drops = 0
+        self.last_error = ""
 
     # ------------------------------------------------------------- lifecycle
 
@@ -100,16 +104,32 @@ class EventStream:
             except requests.exceptions.RequestException as exc:
                 self.connected = False
                 self.reconnects += 1
-                log.warning("Event stream dropped: %s", exc)
+                self._note_drop(exc)
             except Exception as exc:  # keep the daemon alive whatever happens
                 self.connected = False
                 self.reconnects += 1
-                log.warning("Event stream error: %s", exc)
+                self._note_drop(exc, error=True)
 
             if self._stop.is_set():
                 break
             time.sleep(backoff)
             backoff = min(backoff * 2, BACKOFF_MAX)
+
+    def _note_drop(self, exc: BaseException, error: bool = False) -> None:
+        """Record one failed attempt without spamming the log.
+
+        A server restart produces a refusal every attempt for minutes on
+        end; one WARNING documents the outage and the recovery line closes
+        it, so further consecutive drops go to DEBUG - they are counted in
+        ``reconnects`` for /health, not lost, just quieter. Every tenth
+        drop logs again so a really long outage stays visible.
+        """
+        self.drops += 1
+        self.last_error = str(exc)
+        level = logging.ERROR if error else logging.WARNING
+        if self.drops > 1 and self.drops % 10 != 0:
+            level = logging.DEBUG
+        log.log(level, "Event stream dropped (%d in a row): %s", self.drops, exc)
 
     def _consume(self) -> None:
         # A context manager so the socket is released on stop, on a dropped
@@ -123,7 +143,10 @@ class EventStream:
         ) as resp:
             resp.raise_for_status()
             self.connected = True
-            log.info("Event stream connected")
+            extra = f" after {self.drops} failed attempt(s)" if self.drops else ""
+            log.info("Event stream connected%s", extra)
+            self.drops = 0
+            self.last_error = ""
 
             for raw in resp.iter_lines(decode_unicode=True):
                 if self._stop.is_set():

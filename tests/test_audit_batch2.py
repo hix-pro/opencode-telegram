@@ -82,7 +82,7 @@ def test_health_reports_a_real_uptime(tmp_path):
         },
     )()
     bridge.events = type(
-        "E", (), {"connected": True, "frames": 5, "reconnects": 0}
+        "E", (), {"connected": True, "frames": 5, "reconnects": 0, "last_error": ""}
     )()
     bridge._requests = {}
     bridge._backlog = {}

@@ -66,6 +66,10 @@ class Context:
     # it, so a stale button cannot still resolve.
     on_permission_answered: Callable[[str], None] = lambda request_id: None
     schedules: ScheduleStore | None = None
+    # Out-of-band delivery for this chat, used by long-running commands that
+    # finish after the dispatcher has moved on. None keeps commands
+    # synchronous.
+    respond: Callable[[str], None] | None = None
 
     # -------------------------------------------------------------- shortcuts
 
@@ -282,8 +286,6 @@ def cmd_sessions(ctx: Context) -> str:
     limit = 10
     search = None
     if parts:
-        if parts[0].lstrip("-").isdigit() and not parts[0].lstrip("-"):
-            raise CommandError("Usage: /sessions [limit] [search]")
         if parts[0].isdigit():
             limit = min(int(parts[0]), 50)
             search = parts[1] if len(parts) > 1 else None
@@ -578,34 +580,33 @@ def cmd_write(ctx: Context) -> str:
 def cmd_sh(ctx: Context) -> str:
     """Run a command in the chat's directory and return its output.
 
-    Execution happens on a worker thread with its own deadline, so a runaway
-    command cannot freeze command handling or /abort for the whole chat.
+    With a live transport (:meth:`Context.respond`) the output is delivered
+    as a second message when it is ready. The dispatcher runs on the main
+    thread, so joining here held every command and every button - /abort
+    for every chat - hostage for up to a minute.
     """
     if not ctx.args:
         raise CommandError("Usage: /sh <command>")
+    if ctx.respond is not None:
+        return _sh_async(ctx)
+    return _sh_blocking(ctx)
 
+
+def _sh_reply(command: str, output: str, limit: int) -> str:
+    body = output or "(no output)"
+    return f"$ {command}\n" + code_block(head_tail(body, limit), limit=limit)
+
+
+def _sh_blocking(ctx: Context) -> str:
+    """Run and join, for callers with no out-of-band transport."""
     outcome: dict[str, Any] = {"output": "", "status": "completed"}
 
     def run() -> None:
-        try:
-            outcome["output"] = run_and_capture(
-                ctx, ctx.args, ctx.directory, SHELL_TIMEOUT
-            )
-        except CommandError as exc:
-            # Runs on the worker thread, where raising would vanish into the
-            # join; hand it back to the caller instead.
-            outcome["error"] = str(exc)
-        except ApiError as exc:
-            outcome["status"] = "error"
-            outcome["output"] = exc.message
-        except Exception:
-            log.exception("Shell command failed")
-            outcome["status"] = "error"
-            outcome["output"] = "internal error running the command"
+        _capture_into(outcome, ctx)
 
     worker = threading.Thread(target=run, name="shell", daemon=True)
     worker.start()
-    # Bounded join: the caller returns rather than hanging the poll thread.
+    # Bounded join: the caller returns rather than hanging the calling thread.
     worker.join(timeout=SHELL_TIMEOUT + 5)
 
     if outcome.get("error"):
@@ -617,13 +618,43 @@ def cmd_sh(ctx: Context) -> str:
             "it will finish in the background]"
         )
 
-    body = outcome["output"] or "(no output)"
-    header = f"$ {ctx.args}"
-    return (
-        header
-        + "\n"
-        + code_block(head_tail(body, ctx.config.max_output), limit=ctx.config.max_output)
-    )
+    if outcome["status"] == "error" and not outcome["output"]:
+        outcome["output"] = "internal error running the command"
+    return _sh_reply(ctx.args, outcome["output"], ctx.config.max_output)
+
+
+def _sh_async(ctx: Context) -> str:
+    """Start the command and return immediately; deliver the output later."""
+    command = ctx.args
+    respond = ctx.respond
+    outcome: dict[str, Any] = {"output": "", "status": "completed"}
+
+    def run() -> None:
+        _capture_into(outcome, ctx)
+        if outcome.get("error"):
+            respond(f"! {outcome['error']}")
+            return
+        respond(_sh_reply(command, outcome["output"], ctx.config.max_output))
+
+    threading.Thread(target=run, name="shell", daemon=True).start()
+    return f"Running $ {command} - the output follows here when it finishes."
+
+
+def _capture_into(outcome: dict[str, Any], ctx: Context) -> None:
+    """Run the shell command, recording the result or failure for delivery."""
+    try:
+        outcome["output"] = run_and_capture(ctx, ctx.args, ctx.directory, SHELL_TIMEOUT)
+    except CommandError as exc:
+        # Runs on a worker thread, where raising would vanish into the join;
+        # hand it back to the caller instead.
+        outcome["error"] = str(exc)
+    except ApiError as exc:
+        outcome["status"] = "error"
+        outcome["output"] = exc.message
+    except Exception:
+        log.exception("Shell command failed")
+        outcome["status"] = "error"
+        outcome["output"] = "internal error running the command"
 
 
 @command("perms", "List pending permission requests", group="Permissions")
@@ -1130,7 +1161,6 @@ def cmd_search(ctx: Context) -> str:
     return "\n\n".join(parts)
 
 
-
 # ----------------------------------------------------------------------- help
 
 
@@ -1182,16 +1212,11 @@ def cmd_schedule(ctx: Context) -> str:
             raise CommandError("What should it do? Try: /schedule every 30m check the build")
         schedule = schedules.add(ctx.chat_id, spec, prompt)
         ctx.persist_schedules()
-        return (
-            f"Scheduled {schedule.id}: {schedule.description}\n\n\"{schedule.prompt}\""
-        )
+        return f'Scheduled {schedule.id}: {schedule.description}\n\n"{schedule.prompt}"'
 
     raise CommandError(
         f"Bad schedule {action!r}. Use 'every 30m', 'hourly', or 'daily 09:00'."
     )
-    ctx.persist_schedules()
-    return f"Scheduled {schedule.id}: {schedule.description}\n\n\"{schedule.prompt}\""
-
 
 
 @command("status", "Server, session, and bridge state", group="Help")
@@ -1328,7 +1353,11 @@ def _stream_line(health: dict) -> str:
         return "not started"
     if events.get("connected"):
         return f"connected, {events.get('frames', 0)} frames"
-    return f"reconnecting ({events.get('reconnects', 0)} times)"
+    line = f"reconnecting ({events.get('reconnects', 0)} times)"
+    reason = (events.get("last_error") or "").strip()
+    if reason:
+        line += f" - {truncate(reason, 70)}"
+    return line
 
 
 @command(
@@ -1354,7 +1383,6 @@ def cmd_selftest(ctx: Context) -> str:
 
     header = f"Self-test in {directory}\n"
     return header + report.render()
-
 
 
 @command("doctor", "Check the bridge end to end", group="Help")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import time
 
 import pytest
 
@@ -416,3 +417,55 @@ def test_sh_reports_a_failing_command(ctx):
     ctx.api.shell_output_data = {"output": "boom: no such thing\n", "status": "completed"}
     reply = run(ctx, "/sh whatever")
     assert "boom" in reply
+
+
+def _await_delivery(delivered: list, timeout: float = 2.0) -> bool:
+    """Wait for the shell thread to hand its result over."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not delivered:
+        time.sleep(0.02)
+    return bool(delivered)
+
+
+def test_sh_with_respond_acks_then_delivers(ctx):
+    """The dispatcher answers immediately; the output arrives out-of-band.
+
+    The dispatcher runs on the main poll thread: joining there used to hold
+    every command and every button - /abort for every chat - hostage for up
+    to a minute.
+    """
+    sent: list[str] = []
+    ctx.respond = sent.append
+    reply = run(ctx, "/sh echo hi")
+    assert reply is not None, "the ack must not be mistaken for a prompt"
+    assert "Running $" in reply
+    assert sent == [] or "$ echo hi" in "\n".join(sent)
+    assert _await_delivery(sent)
+    assert len(sent) == 1
+    assert "hi" in sent[0]
+
+
+def test_sh_with_respond_reports_failures(ctx, monkeypatch):
+    """A dead command reaches the chat too - as an error, not silence."""
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+    sent: list[str] = []
+    ctx.respond = sent.append
+    ctx.api.shell_output_data = {"output": "", "status": "running"}
+    ctx.api.echo_sentinel = False
+    run(ctx, "/sh sleep 30")
+    assert _await_delivery(sent)
+    assert sent[0].startswith("!")
+
+
+def test_sh_with_respond_survives_an_api_error(ctx):
+    """A server-side failure is delivered as text, never raised into the poll."""
+    sent: list[str] = []
+    ctx.respond = sent.append
+
+    def explode(*args, **kwargs):
+        raise ApiError(500, "shell endpoint exploded")
+
+    ctx.api.run_shell = explode
+    run(ctx, "/sh ls")
+    assert _await_delivery(sent)
+    assert "explode" in sent[0]

@@ -171,8 +171,11 @@ server's HTTP API, which ignores the requested directory and resolves everything
 against its own working directory. They are scoped to the working directory and
 confined by `ALLOWED_ROOTS`.
 
-**`/sh` has a hard limit.** The OpenCode server reaps a shell roughly a second
-after it starts, so only commands that finish immediately return output. For
+**`/sh` replies in two messages.** The bridge acks immediately - "Running $ ..."
+- and the output arrives as a second message when it finishes. The dispatcher
+never waits for the command, so buttons and commands from any other chat work
+while it runs. The OpenCode server still reaps a shell roughly a second after
+it starts, so only commands that finish immediately return output. For
 anything longer, send it as a message: the agent runs commands itself with no
 such limit and streams the output as it goes.
 | `/git` | Working tree status |
