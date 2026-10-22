@@ -104,8 +104,12 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
 
             marker = Path(workdir) / "selftest.txt"
             marker.write_text("selftest")
-            assert localfs.read_file(workdir, "selftest.txt") == "selftest"
-            assert any(e.name == "selftest.txt" for e in localfs.list_dir(workdir))
+            # raises, not assert: an optimization run (-O) strips asserts and
+            # would pass this selftest with a broken filesystem bridge.
+            if localfs.read_file(workdir, "selftest.txt") != "selftest":
+                raise AssertionError("the file read back differently than it was written")
+            if not any(e.name == "selftest.txt" for e in localfs.list_dir(workdir)):
+                raise AssertionError("the file was not visible to list_dir")
             marker.unlink(missing_ok=True)
             return "read/write/list agree with the agent"
 
@@ -127,7 +131,8 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
             handle = api.run_shell("echo selftest-shell", cwd=workdir, directory=workdir)
             time.sleep(1.0)
             out = api.shell_output(handle["id"], directory=workdir).get("output", "")
-            assert "selftest-shell" in out, f"no output: {out!r}"
+            if "selftest-shell" not in out:
+                raise AssertionError(f"no output: {out!r}")
             return "short commands return output"
 
         report.results.append(_timed("Shell execution", shell))

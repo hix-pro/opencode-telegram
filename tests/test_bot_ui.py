@@ -140,11 +140,29 @@ def test_approval_listing_failure_is_reported(tmp_path):
 
 
 def test_thumbs_down_interrupts_a_running_turn(tmp_path):
+    import threading
+
     bridge = build_bridge(tmp_path, FakeTelegram())
     bridge.state.set_session(CHAT, "ses_test")
+    # "Running" is now a real fact: a live turn thread, not just any session.
+    busy = threading.Event()
+    bridge._workers = {CHAT: threading.Thread(target=busy.wait, daemon=True)}
+    bridge._workers[CHAT].start()
+    try:
+        bridge._handle_update(reaction(emoji="👎"))
+        assert bridge.abort_flag(CHAT).is_set()
+        assert "Stopping" in bridge.telegram.sent[-1]
+    finally:
+        busy.set()
+
+
+def test_stop_reaction_on_an_idle_chat_does_not_arm_the_flag(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.state.set_session(CHAT, "ses_test")
+    bridge._workers = {}
     bridge._handle_update(reaction(emoji="👎"))
-    assert bridge.abort_flag(CHAT).is_set()
-    assert "Stopping" in bridge.telegram.sent[-1]
+    assert "Nothing is running" in bridge.telegram.sent[-1]
+    assert not bridge.abort_flag(CHAT).is_set()
 
 
 def test_stop_reaction_without_a_session_reports(tmp_path):
@@ -619,3 +637,47 @@ def test_unknown_slash_without_a_macro_still_errors(tmp_path):
 
     assert any("Unknown command" in sent for sent in bridge.telegram.sent)
     assert bridge.work.empty()
+
+
+def test_macro_cannot_shadow_the_start_greeting(tmp_path):
+    """run() answers /start with help before looking any registry entry up,
+    so a macro recorded under 'start' was accepted and then orphaned."""
+    ctx = build_bridge(tmp_path, FakeTelegram()).context(CHAT)
+    with pytest.raises(C.CommandError):
+        C.run(ctx, "/macro start stand standup notes")
+
+
+def test_an_args_only_macro_without_arguments_errors_out(tmp_path):
+    """'jira {args}' typed bare used to rewrite to '' and queue the literal
+    '/jira' as the agent's prompt."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.state.save_macros({"jira": "{args}"})
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/jira"}}
+    )
+
+    assert bridge.work.empty(), "nothing must reach the agent"
+    assert any("'jira'" in text or "needs arguments" in text for text in bridge.telegram.sent)
+
+
+def test_macro_expansion_still_works_with_a_provided_argument(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.state.save_macros({"jira": "{args}"})
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/jira triage MY-42"}}
+    )
+
+    assert bridge.work.get(timeout=1) == (CHAT, "triage MY-42", None)
+
+
+def test_a_multiline_macro_body_is_rejected(tmp_path):
+    """Everything after the first line was silently thrown away; half a
+    prompt looked recorded and ran half-empty every time."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    ctx = bridge.context(CHAT)
+
+    with pytest.raises(C.CommandError):
+        C.run(ctx, "/macro deploy ship the thing\nnow")
+    assert "deploy" not in bridge.state.macros

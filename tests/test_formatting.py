@@ -117,3 +117,9 @@ def test_permission_line_summarises_extra_resources():
 def test_cost_line_handles_missing_data():
     assert cost_line(None) == "-"
     assert "in 3 tok" in cost_line({"input": 2, "output": 1})
+
+
+def test_tail_zero_limit_trims_to_nothing():
+    # text[-0:] is the whole string: a zero limit used to return everything.
+    assert tail("x" * 100, 0) == ""
+    assert tail("x" * 100, -3) == ""

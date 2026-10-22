@@ -255,9 +255,9 @@ class Config:
             raise ConfigError(f"PROJECT_DIR is not a directory: {default_dir}")
 
         roots = tuple(
-            Path(p).expanduser().resolve()
-            for p in (source.get("ALLOWED_ROOTS", "").split(","))
-            if p.strip()
+            Path(entry.strip()).expanduser().resolve()
+            for entry in (source.get("ALLOWED_ROOTS", "") or "").split(",")
+            if entry.strip()
         )
         # Fail at startup rather than on every message: a PROJECT_DIR outside
         # the allow-list makes ensure_session raise forever.

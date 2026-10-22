@@ -244,9 +244,25 @@ def test_callback_is_always_acknowledged(bridge):
 
 def test_abort_button_stops_the_turn(bridge):
     bridge.state.set_session(CHAT, "ses_aaaaaaaaaaaa1111")
+    busy = threading.Event()
+    bridge._workers[CHAT] = threading.Thread(target=busy.wait, daemon=True)
+    bridge._workers[CHAT].start()
+    try:
+        press(bridge, "abort")
+        assert bridge.api.interrupted == ["ses_aaaaaaaaaaaa1111"]
+        assert bridge.abort_flag(CHAT).is_set()
+    finally:
+        busy.set()
+
+
+def test_abort_button_on_an_idle_chat_does_not_arm_the_flag(bridge):
+    """A stale abort flag used to kill the next turn - often a scheduled
+    job - the moment it started."""
+    bridge.state.set_session(CHAT, "ses_aaaaaaaaaaaa1111")
     press(bridge, "abort")
-    assert bridge.api.interrupted == ["ses_aaaaaaaaaaaa1111"]
-    assert bridge.abort_flag(CHAT).is_set()
+    assert bridge.api.interrupted == []
+    assert not bridge.abort_flag(CHAT).is_set()
+    assert "Nothing is running" in bridge.telegram.sent[-1]
 
 
 def test_abort_button_without_a_session_is_harmless(bridge):
@@ -273,10 +289,28 @@ def test_use_button_switches_by_id_suffix(bridge):
     assert bridge.state.session(CHAT) == "ses_bbbbbbbbbbbb2222"
 
 
-def test_use_button_with_no_match_changes_nothing(bridge):
+def test_use_button_with_no_match_says_so(bridge):
+    """A silent return after a tap looks exactly like a dead button."""
     bridge.state.set_session(CHAT, "ses_aaaaaaaaaaaa1111")
     press(bridge, keyboards.encode("use", "zzzz"))
     assert bridge.state.session(CHAT) == "ses_aaaaaaaaaaaa1111"
+    assert any("recent list" in text for text in bridge.telegram.sent)
+
+
+def test_use_button_refuses_a_dead_directory(tmp_path, bridge):
+    """The typed /use validated the session's directory; the button path
+    used to switch onto a session that fails on every prompt."""
+    bridge.api.sessions = [
+        {
+            "id": "ses_gonedirectory1111",
+            "title": "Gone",
+            "directory": str(tmp_path / "vanished"),
+        }
+    ]
+    bridge.state.set_session(CHAT, "ses_aaaaaaaaaaaa1111")
+    press(bridge, keyboards.encode("use", "1111"))
+    assert bridge.state.session(CHAT) == "ses_aaaaaaaaaaaa1111"
+    assert any("Cannot switch" in text for text in bridge.telegram.sent)
 
 
 def test_cmd_button_runs_the_command(bridge):

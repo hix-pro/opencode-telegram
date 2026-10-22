@@ -157,8 +157,8 @@ class Command:
 REGISTRY: dict[str, Command] = {}
 
 # The commands Telegram autocomplete offers in the input bar. REGISTRY is
-# the whole book (48 entries and growing); the phone keyboard only needs
-# the ones a person types daily - 48 suggestions scrolling in the bar is
+# the whole book (49 entries and growing); the phone keyboard only needs
+# the ones a person types daily - 49 suggestions scrolling in the bar is
 # its own bug. /help stays the complete reference for the rest.
 PRIMARY_COMMANDS = frozenset(
     {
@@ -182,6 +182,13 @@ PRIMARY_COMMANDS = frozenset(
 
 # A macro name: letters/digits/underscore, starting with a letter.
 MACRO_NAME = re.compile(r"[a-z][a-z0-9_]{0,23}")
+
+# Names run() dispatches to the help card before it ever consults the
+# registry: /start is the canonical wake-the-bot greeting and /help_ is the
+# naming it desugars to. They are not registry entries, but a macro recorded
+# under one used to be orphaned forever - /macro accepted it, and typing the
+# name printed the help card instead of running the macro.
+DISPATCH_ALIASES = ("start", "help_")
 
 # Longest a /sh command may run before the bridge stops waiting.
 SHELL_TIMEOUT = 60
@@ -370,6 +377,10 @@ def cmd_use(ctx: Context) -> str:
     group="Help",
 )
 def cmd_macro(ctx: Context) -> str:
+    if ctx.rest:
+        # The body was silently cut at the first newline: the recorded
+        # macro looked complete and ran half a prompt every time.
+        raise CommandError("A macro body is one line - run it with extra arguments instead.")
     trimmed = (ctx.args or "").strip()
     if not trimmed:
         macros = ctx.macros
@@ -389,8 +400,8 @@ def cmd_macro(ctx: Context) -> str:
         raise CommandError(
             "Macro names use letters, digits and underscores, starting with a letter."
         )
-    if name in REGISTRY:
-        raise CommandError(f"/{name} is a built-in command; a macro cannot shadow it.")
+    if name in REGISTRY or name in DISPATCH_ALIASES:
+        raise CommandError(f"/{name} is built in; a macro cannot shadow it.")
     if not template:
         if name in ctx.macros:
             del ctx.macros[name]
@@ -1196,6 +1207,10 @@ def cmd_alert(ctx: Context) -> str:
         amount = float(raw.lstrip("$"))
     except ValueError as exc:
         raise CommandError("Usage: /alert 0.25 or /alert off") from exc
+    if amount < 0:
+        # Negative thresholds accepted silently made every turn cost-negative
+        # and, since progress.cost is never negative, alerts never fired.
+        raise CommandError("The threshold is a non-negative amount, or /alert off.")
     ctx.state.set_pref(ctx.chat_id, "cost_alert", amount)
     return f"Cost alert set to ${amount:.2f}."
 
@@ -1385,7 +1400,11 @@ def run_and_capture(ctx: Context, command: str, cwd: str, timeout: int) -> str:
         if token in output:
             body, _, tail = output.partition(f"\n{token}")
             body = body.rstrip("\n")
-            code = tail.strip().split(" ", 1)[-1] if " " in tail.strip() else ""
+            # The sentinel carries " <code>"; the tail after the token is the
+            # code itself. (The old probe looked for a space *inside* the
+            # stripped tail - there is none - so [exit N] never appeared.)
+            tail = tail.strip()
+            code = tail.split(" ", 1)[0] if tail else ""
             return f"{body}\n[exit {code}]" if code.isdigit() else body
 
         # The server reaps a shell that runs too long: no sentinel ever
@@ -1616,7 +1635,7 @@ def run(ctx: Context, text: str) -> str | None:
         return None
 
     name, args, rest = parsed
-    if name in ("start", "help_"):
+    if name in DISPATCH_ALIASES:
         return _help_text()
 
     cmd = REGISTRY.get(name)
@@ -1631,6 +1650,12 @@ def run(ctx: Context, text: str) -> str | None:
                 tail = f"{tail}\n{rest}" if tail else rest
             if "{args}" in template:
                 expanded = template.replace("{args}", tail)
+                if not expanded.strip():
+                    # "/jira" with no tail used to rewrite to "" and queue
+                    # the bare command name as the agent's prompt.
+                    raise CommandError(
+                        f"/{name} is {template!r} - it needs arguments after it."
+                    )
             else:
                 expanded = f"{template} {tail}" if tail else template
             ctx.rewrite = expanded.strip()

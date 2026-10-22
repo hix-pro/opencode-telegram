@@ -137,3 +137,20 @@ def test_a_fully_commented_value_is_ignored():
                 "ALLOWED_ROOTS": "# /home/demo",
             }
         )
+
+
+def test_allowed_roots_tolerate_spaces_after_commas():
+    config = Config.from_env(
+        {
+            "TELEGRAM_BOT_TOKEN": "t",
+            "TELEGRAM_CHAT_ID": "42",
+            "OPENCODE_URL": "http://x",
+            "OPENCODE_PASSWORD": "p",
+            "PROJECT_DIR": "/home/demo",
+            "ALLOWED_ROOTS": "/home/demo, /home/demo/Desktop",
+        }
+    )
+    assert Path("/home/demo") in config.allowed_roots
+    assert Path("/home/demo/Desktop") in config.allowed_roots
+    # A leading space used to resolve as a distinct (nonexistent) root.
+    assert not any(str(root).lstrip() != str(root) for root in config.allowed_roots)

@@ -243,14 +243,9 @@ class Bridge:
 
         @router.on("abort")
         def _abort(chat_id: str, argument: str) -> None:
-            session = self.state.session(chat_id)
-            if not session:
-                return
-            self.abort_flag(chat_id).set()
-            try:
-                self.api.interrupt_session(session)
-            except ApiError as exc:
-                log.warning("Interrupt failed: %s", exc)
+            # Same semantics as typed /abort: stop when something is running,
+            # say so otherwise, and never leave a stale abort flag armed.
+            self._stop_turn(chat_id)
 
         @router.on("info")
         def _info(chat_id: str, argument: str) -> None:
@@ -273,26 +268,38 @@ class Bridge:
                 return
             try:
                 sessions = self.api.list_sessions(
-                    directory=self.state.directory(chat_id), limit=25
+                    directory=self.state.directory(chat_id), limit=50
                 )
             except ApiError:
                 return
             matches = [s for s in sessions if (s.get("id") or "").endswith(argument)]
-            if matches:
-                session = matches[0]
-                self.state.set_session(
-                    chat_id, session["id"], directory=session.get("directory")
-                )
-                # Never a silent switch: the user tapped something, and
-                # Telegram shows nothing on its own.
-                title = (session.get("title") or "").strip()[:40]
-                suffix = session["id"][-8:]
-                self.send(
-                    chat_id,
-                    f'Switched to "{title}" ({suffix}).'
-                    if title
-                    else f"Switched to session {suffix}.",
-                )
+            if not matches:
+                # The list is a recent window and pages shift; silence here
+                # looks exactly like a dead button.
+                self.send(chat_id, "! That session is no longer in the recent list.")
+                return
+            session = matches[0]
+            directory = session.get("directory") or self.state.directory(chat_id)
+            try:
+                # The button path used to skip the containment check the
+                # typed /use does: a directory deleted after the button was
+                # rendered would switch the chat onto a session that fails
+                # on every prompt.
+                self.config.resolve_dir(directory)
+            except ConfigError as exc:
+                self.send(chat_id, f"! Cannot switch: {exc}")
+                return
+            self.state.set_session(chat_id, session["id"], directory=directory)
+            # Never a silent switch: the user tapped something, and
+            # Telegram shows nothing on its own.
+            title = (session.get("title") or "").strip()[:40]
+            suffix = session["id"][-8:]
+            self.send(
+                chat_id,
+                f'Switched to "{title}" ({suffix}).'
+                if title
+                else f"Switched to session {suffix}.",
+            )
 
     def _run_command_text(self, chat_id: str, text: str) -> None:
         """Run a command on behalf of a button press."""
@@ -381,7 +388,7 @@ class Bridge:
             chat_id=chat_id,
             policy=self.policy,
             health=self.health_report(),
-            on_permission_answered=self._requests.pop,
+            on_permission_answered=lambda request_id: self._requests.pop(request_id, None),
             schedules=self.schedules,
             macros=dict(self.state.macros),
             respond=lambda text: self.send(chat_id, text),
@@ -539,8 +546,12 @@ class Bridge:
 
         if reply is None:
             # A macro rewrote the text into the standing prompt it stands
-            # for; otherwise the raw text is the prompt.
-            self.work.put((chat_id, ctx.rewrite or text, None))
+            # for; otherwise the raw text is the prompt. commands.run()
+            # refuses to hand back an empty rewrite, but the guard stays:
+            # queueing "" would silently swallow the message.
+            prompt = ctx.rewrite if ctx.rewrite is not None else text
+            if prompt:
+                self.work.put((chat_id, prompt, None))
             return
         if text.startswith("/help"):
             self.send(chat_id, reply, keyboards.help_buttons())
@@ -576,8 +587,11 @@ class Bridge:
         reactor = str(sender.get("id", "") or chat_id)
         if reactor not in self.config.allowed_chats:
             return
-        text = (message.get("text") or "").strip()
+        text = keyboards.from_menu((message.get("text") or "").strip())
         if not text or text.startswith("/"):
+            # Slash commands already ran when first sent - and a menu label's
+            # canonical form IS a command, so editing the label "sessions"
+            # once queued the bare word "sessions" as a prompt for the agent.
             return
         self.send(chat_id, "Resending your edit as a new prompt.")
         self.work.put((chat_id, text, None))
@@ -640,9 +654,17 @@ class Bridge:
             self._reply_permission(chat_id, str(request["id"]), "once", request)
 
     def _stop_turn(self, chat_id: str) -> None:
-        """Interrupt whatever is running here - the typing-free /abort."""
+        """Interrupt whatever is running here - the typing-free /abort.
+
+        Fires only when a turn is actually running: arming the abort flag on
+        an idle chat used to kill the *next* turn - often a scheduled job - the
+        moment it started, looking like a random cancellation.
+        """
         session = self.state.session(chat_id)
         if not session:
+            self.send(chat_id, "Nothing is running.")
+            return
+        if not self._chat_busy(chat_id):
             self.send(chat_id, "Nothing is running.")
             return
         self.abort_flag(chat_id).set()

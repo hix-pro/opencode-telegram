@@ -469,3 +469,36 @@ def test_sh_with_respond_survives_an_api_error(ctx):
     run(ctx, "/sh ls")
     assert _await_delivery(sent)
     assert "explode" in sent[0]
+
+
+def test_sh_reports_the_exit_code(ctx):
+    """[exit N] was unreachable: the code probe needed a space inside the
+    sentinel tail, which never has one."""
+    from conftest import FakeAPI
+
+    class ExitSeven(FakeAPI):
+        def run_shell(self, command, cwd, directory=None):
+            self._record("run_shell", command, cwd, directory)
+            import re as _re
+
+            match = _re.search(r"__bridge_done_[0-9a-f]+", command)
+            self._pending_token = match.group(0) if match else "__bridge_done_none"
+            return {"id": "sh1", "status": "running"}
+
+        def shell_output(self, shell_id, directory=None):
+            return {"output": f"boom\n{self._pending_token} 7\n", "status": "running"}
+
+    ctx.api = ExitSeven()
+    reply = run(ctx, "/sh ls /definitely-missing")
+
+    assert "[exit 7]" in reply
+
+
+def test_sh_reports_success_with_exit_zero(ctx):
+    reply = run(ctx, "/sh echo hi")
+    assert "[exit 0]" in reply
+
+
+def test_alert_rejects_negative_thresholds(ctx):
+    with pytest.raises(CommandError, match="non-negative"):
+        run(ctx, "/alert -5")

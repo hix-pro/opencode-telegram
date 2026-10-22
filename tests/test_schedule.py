@@ -203,7 +203,7 @@ def test_remove_by_id_and_suffix():
 def test_remove_by_short_suffix():
     store = ScheduleStore()
     schedule = store.add("42", "hourly", "x")
-    short = schedule.id.split("_", 2)[2]
+    short = schedule.id.split("_", 1)[1]
     assert store.remove(short).id == schedule.id
 
 
@@ -271,3 +271,14 @@ def test_schedules_persist_through_state(ctx):
     reloaded = type(ctx.state)(ctx.state.path, ctx.state.default_dir)
     reloaded.load()
     assert len(reloaded.load_schedules()) == 1
+
+
+def test_added_schedules_never_share_an_id():
+    """The old scheme was length + epoch-second: two chats adding a schedule
+    in the same second collided, and removal then deleted the wrong one."""
+    store = ScheduleStore()
+    first = store.add("42", "daily 09:00", "standup notes")
+    second = store.add("43", "hourly", "check the queue")
+    assert first.id != second.id
+    store.remove(second.id)
+    assert first.id in {s.id for s in store.items}

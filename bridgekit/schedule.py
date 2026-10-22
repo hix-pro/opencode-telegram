@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -152,7 +153,7 @@ class ScheduleStore:
     def add(self, chat_id: str, spec: str, prompt: str) -> Schedule:
         interval, hour, minute = parse(spec)
         schedule = Schedule(
-            id=f"sch_{len(self.items) + 1}_{int(time.time()) % 100000}",
+            id=f"sch_{uuid.uuid4().hex[:8]}",
             chat_id=chat_id,
             spec=spec,
             prompt=prompt,

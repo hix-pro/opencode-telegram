@@ -77,3 +77,17 @@ def test_router_lists_its_actions():
         pass
 
     assert router.actions() == ["a", "b"]
+
+
+def test_every_menu_label_maps_to_a_real_command():
+    """A tap on the persistent keyboard desugars to /command via
+    MENU_LABELS; one that does not exist in REGISTRY queues the literal
+    label word as an agent prompt - silent, and baffling."""
+    from bridgekit import commands
+
+    missing = {
+        label
+        for label in keyboards.MENU_LABELS.values()
+        if label not in commands.REGISTRY and label not in commands.DISPATCH_ALIASES
+    }
+    assert not missing, f"menu labels point at commands that do not exist: {missing}"

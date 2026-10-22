@@ -31,8 +31,9 @@ def tail(text: str, limit: int = 3500, marker: str = "\n... (earlier text trimme
     if len(text) <= limit:
         return text
     if limit <= len(marker):
-        # The marker alone would exceed the limit.
-        return text[-max(0, limit) :]
+        # The marker alone would exceed the limit; and text[-0:] is the
+        # whole string, so a zero (or negative) limit must return nothing.
+        return text[-limit:] if limit > 0 else ""
     return marker + text[-(limit - len(marker)) :]
 
 
