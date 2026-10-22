@@ -431,6 +431,23 @@ class Bridge:
 
     # ------------------------------------------------------------- main loop
 
+    def _touch_heartbeat(self) -> None:
+        """Stamp the liveness file the heartbeat watchdog reads.
+
+        Best effort in every way: computed lazily so test-built bridges work
+        unchanged, OSError swallowed (a read-only disk should not take the
+        poll thread down), and the file's own mtime carries the information -
+        nothing is ever appended.
+        """
+        path = getattr(self, "_heartbeat_path", None)
+        if path is None:
+            path = self.config.state_file.parent / ".bridge-heartbeat"
+            self._heartbeat_path = path
+        try:
+            path.touch(exist_ok=True)
+        except OSError:
+            pass
+
     def poll_loop(self) -> None:
         # Resume where we left off: starting at zero would re-deliver every
         # update Telegram still holds, so a restart could resubmit your prompt.
@@ -439,6 +456,11 @@ class Bridge:
             log.info("Resuming Telegram updates from %d", offset)
         log.info("Polling Telegram; /help lists commands")
         while not self.stop_event.is_set():
+            # Liveness signal for the heartbeat watchdog: touched before the
+            # long poll every iteration, success or failure alike - the
+            # watchdog must restart a *wedged* process, not one whose calls
+            # are erroring while it lives.
+            self._touch_heartbeat()
             try:
                 updates = self.telegram.get_updates(offset, timeout=30)
             except TelegramError as exc:
@@ -617,6 +639,16 @@ class Bridge:
         emojis = [str(r.get("emoji") or "") for r in reaction.get("new_reaction") or []]
         if not emojis:
             return
+        # The receipt: per-request reactions were physically dead for a
+        # production round (a wire-format bug), so every arriving reaction
+        # is worth one visible line until proven boring.
+        log.info(
+            "Reaction update: chat %s user %s message %s adds %s",
+            chat_id,
+            reactor,
+            reaction.get("message_id"),
+            emojis,
+        )
         approve = any(emoji in APPROVE_REACTIONS for emoji in emojis)
         stop = any(emoji in STOP_REACTIONS for emoji in emojis)
         if not (approve or stop):

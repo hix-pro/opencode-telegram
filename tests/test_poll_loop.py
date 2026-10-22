@@ -9,6 +9,7 @@ update_id. So this drives poll_loop itself through realistic batches.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -171,3 +172,16 @@ def test_a_mid_batch_crash_keeps_every_acked_update(tmp_path, monkeypatch):
         bridge.poll_loop()
 
     assert bridge.state.load_offset() == 2, "the message already handled must stay acked"
+
+
+def test_every_poll_iteration_stamps_the_heartbeat(tmp_path):
+    """The heartbeat is the watchdog's only view of a wedged poll thread: it
+    must be touched every iteration, success or failure alike (touched BEFORE
+    the long poll, so a bridge facing a Telegram outage still beats)."""
+    bridge = build_bridge(tmp_path, BatchTelegram([[MSG], []]))
+    bridge.telegram.stopper = bridge.stop_event
+    bridge.poll_loop()
+
+    heartbeat = tmp_path / ".bridge-heartbeat"
+    assert heartbeat.exists(), "the watchdog needs a stamp even without updates"
+    assert abs(time.time() - heartbeat.stat().st_mtime) < 30

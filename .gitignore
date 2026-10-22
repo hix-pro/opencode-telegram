@@ -5,6 +5,7 @@
 
 # Runtime state and logs
 .state.json
+.bridge-heartbeat
 .session.json
 bridge.log
 bridge.log.*

@@ -46,7 +46,22 @@ mkdir -p "$UNIT_DIR"
 cp "$HERE/systemd/$UNIT_NAME" "$UNIT_DIR/$UNIT_NAME"
 info "unit installed to $UNIT_DIR/$UNIT_NAME"
 
+# The watchdog timer restarts a hung-but-still-"active" bridge (crashes are
+# already covered by Restart=always). Both files are idempotent to reinstall.
+WATCHDOG=opencode-watchdog
+cp "$HERE/systemd/$WATCHDOG.service" "$UNIT_DIR/$WATCHDOG.service"
+cp "$HERE/systemd/$WATCHDOG.timer" "$UNIT_DIR/$WATCHDOG.timer"
+info "watchdog units installed to $UNIT_DIR"
+
 systemctl --user daemon-reload
+
+# The watchdog note: enable the timer right with the service.
+if systemctl --user is-active --quiet "$WATCHDOG.timer"; then
+    info "watchdog timer already running"
+else
+    systemctl --user enable --now "$WATCHDOG.timer" >/dev/null
+    info "watchdog timer enabled"
+fi
 
 if systemctl --user is-active --quiet "$UNIT_NAME"; then
     systemctl --user restart "$UNIT_NAME"

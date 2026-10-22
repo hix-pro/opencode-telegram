@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the bridge heartbeat watchdog once a minute
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=60s
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
