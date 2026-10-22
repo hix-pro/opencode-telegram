@@ -108,7 +108,7 @@ class Config:
     default_dir: str
     state_file: Path
     permission_poll: float = 5.0
-    allowed_roots: tuple[str, ...] = ()
+    allowed_roots: tuple[Path, ...] = ()
     max_output: int = 3500
     max_chunk: int = MAX_CHUNK
 
@@ -218,7 +218,7 @@ class Config:
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> Config:
-        source = _strip_inline_comments(os.environ if env is None else env)
+        source = _strip_inline_comments(dict(os.environ if env is None else env))
 
         token = source.get("TELEGRAM_BOT_TOKEN", "").strip()
         if not token:

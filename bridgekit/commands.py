@@ -61,12 +61,15 @@ class Context:
     chat_id: str
     args: str = ""
     rest: str = ""
-    policy: Policy | None = None
+    # The approval policy for this chat; every Context has one (see
+    # default_factory) so no command handler has to defend against None.
+    policy: Policy = field(default_factory=Policy)
     health: dict = field(default_factory=dict)
     # Lets the bridge drop a cached permission request when a command answers
-    # it, so a stale button cannot still resolve.
-    on_permission_answered: Callable[[str], None] = lambda request_id: None
-    schedules: ScheduleStore | None = None
+    # it, so a stale button cannot still resolve. Return value is ignored.
+    on_permission_answered: Callable[[str], object] = lambda request_id: None
+    # Recurring prompts for this chat; always present (same factory rule).
+    schedules: ScheduleStore = field(default_factory=ScheduleStore)
     # Standing prompts recorded with /macro, keyed by the name they run as.
     macros: dict[str, str] = field(default_factory=dict)
     # Out-of-band delivery for this chat, used by long-running commands that
@@ -81,11 +84,7 @@ class Context:
     # the agent when it returns None; None keeps the original message.
     rewrite: str | None = None
 
-    # -------------------------------------------------------------- shortcuts
-
-    def __post_init__(self) -> None:
-        if self.policy is None:
-            self.policy = Policy()
+    # ------------------------------------------------------------- shortcuts
 
     @property
     def directory(self) -> str:
@@ -117,8 +116,7 @@ class Context:
 
     def persist_schedules(self) -> None:
         """Schedules live in the state file so they survive a restart."""
-        if self.schedules is not None:
-            self.state.save_schedules(self.schedules.to_list())
+        self.state.save_schedules(self.schedules.to_list())
 
     def persist_policy(self) -> None:
         """Write the policy so it survives a restart.
@@ -482,8 +480,8 @@ def cmd_compact(ctx: Context) -> str:
 
 @command("abort", "Stop the running turn", group="Session")
 def cmd_abort(ctx: Context) -> str:
-    ctx.require_session()
-    ctx.api.interrupt_session(ctx.session)
+    session = ctx.require_session()
+    ctx.api.interrupt_session(session)
     return "Interrupt sent."
 
 
@@ -720,6 +718,11 @@ def _sh_blocking(ctx: Context) -> str:
 def _sh_async(ctx: Context) -> str:
     """Start the command and return immediately; deliver the output later."""
     command = ctx.args
+    # cmd_sh only routes here with a delivery channel; an explicit error
+    # beats a bare assert, which vanishes under `python -O` and trips the
+    # security scan (B101) on shipped code.
+    if ctx.respond is None:
+        raise CommandError("No background delivery channel is set for this chat.")
     respond = ctx.respond
     outcome: dict[str, Any] = {"output": "", "status": "completed"}
 
@@ -1387,7 +1390,11 @@ def run_and_capture(ctx: Context, command: str, cwd: str, timeout: int) -> str:
     wrapped = f"( {command} ; ) 2>&1; printf '\\n{token} %s\\n' $?"
 
     handle = ctx.api.run_shell(wrapped, cwd=cwd, directory=cwd)
-    shell_id = handle.get("id")
+    shell_id = str(handle.get("id") or "")
+    if not shell_id:
+        # Without an id there is nothing to poll for output; failing loudly
+        # beats reporting a command stuck "[running]" forever.
+        raise CommandError("The server did not return a shell id for the command.")
     deadline = time.time() + timeout
     output = ""
 

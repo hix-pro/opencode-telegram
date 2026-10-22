@@ -7,6 +7,8 @@ pin the failure reporting, not just the happy path.
 
 from __future__ import annotations
 
+import tempfile
+
 import pytest
 
 from bridgekit import selftest
@@ -134,7 +136,7 @@ def test_run_cleans_up_its_session_even_when_a_check_fails():
         def send_prompt(self, session_id, prompt):
             raise RuntimeError("server went away")
 
-    report = selftest.run(FakeApi(), "/tmp")
+    report = selftest.run(FakeApi(), tempfile.gettempdir())
 
     assert report.failed > 0
     assert deleted == ["ses_1"], "the throwaway session must be removed"

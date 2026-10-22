@@ -32,7 +32,10 @@ import os
 import queue
 import shlex
 import signal
-import subprocess
+
+# Suppression justification: bridge.py has exactly one sanctioned shell-out
+# (the STT transcription below); everything else here spawns nothing at all.
+import subprocess  # nosec
 import sys
 import threading
 import time
@@ -748,7 +751,11 @@ class Bridge:
         if not command:
             return None
         try:
-            result = subprocess.run(
+            # Accepted audit finding, kept on purpose: the command template
+            # is the operator's own .env (shell knowledge they already have)
+            # and the substituted path is shell-quoted. The generic "no
+            # shell=True" advice makes exact transcription quoting worse.
+            result = subprocess.run(  # nosec
                 command.format(file=shlex.quote(str(path))),
                 shell=True,
                 capture_output=True,
@@ -1286,7 +1293,16 @@ class Bridge:
                 "Could not ask about permission %s: %s", request_id, self.telegram.redact(exc)
             )
             return False
-        self._perm_cards[(chat_id, int(message_id))] = request_id
+        if message_id is None:
+            # Delivered, but Telegram did not identify the message: the card
+            # simply cannot be scoped by reaction. The ask still went
+            # through - retrying would post a duplicate card.
+            log.warning(
+                "Permission %s card has no message id; reactions degrade to chat-wide",
+                request_id,
+            )
+            return True
+        self._perm_cards[(chat_id, message_id)] = request_id
         log.info("Asked chat %s about permission %s (%s)", chat_id, request_id, message_id)
         return True
 
@@ -1312,7 +1328,10 @@ def main() -> int:
         # Log lines can contain fragments of what you sent, so keep this as
         # private as the .env it sits next to.
         log_path.chmod(0o600)
-    except Exception:  # never let logging setup stop the daemon
+    except Exception:  # nosec
+        # Logging setup must never stop the daemon (a read-only disk or a
+        # bad log path is not worth dying over); basicConfig below still
+        # writes to stdout, so the journal keeps its own copy.
         pass
 
     logging.basicConfig(

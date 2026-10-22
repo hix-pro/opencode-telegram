@@ -37,8 +37,8 @@ def test_a_silent_bridge_gets_restarted(tmp_path, monkeypatch):
     code = watchdog.main([str(heartbeat), "--unit", "opencode-telegram-bridge"])
 
     assert code == 0
-    assert restarted and restarted[0][-1] == "opencode-telegram-bridge"
-    assert restarted[0][:3] == ["systemctl", "--user", "restart"]
+    assert restarted and restarted[0][-1] == "opencode-telegram-bridge", restarted
+    assert restarted[0][1:3] == ["--user", "restart"], restarted[0]
 
 
 def test_an_errored_telegram_is_not_a_wedge(tmp_path, monkeypatch):

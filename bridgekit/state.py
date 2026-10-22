@@ -184,6 +184,11 @@ class State:
         empty state file that wiped every session on the next boot.
         """
         with self._lock:
+            chats = {
+                chat_id: asdict(chat)
+                for chat_id, chat in list(self._chats.items())
+                if chat_id != "*"
+            }
             payload = {
                 "version": VERSION,
                 # Policy is global rather than per chat, so it does not belong
@@ -193,11 +198,7 @@ class State:
                 "macros": self.macros,
                 # Persist chats even without a session: /dir, /delivery and
                 # /alert all take effect before the first turn.
-                "chats": {
-                    chat_id: asdict(chat)
-                    for chat_id, chat in list(self._chats.items())
-                    if chat_id != "*"
-                },
+                "chats": chats,
             }
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +216,7 @@ class State:
                 # Session ids and per-chat preferences: owner-only, like .env.
                 tmp.chmod(0o600)
                 os.replace(tmp, self.path)
-                self._mirror_legacy(payload["chats"])
+                self._mirror_legacy(chats)
                 self._dirty = False
             except OSError:
                 # Losing persistence is survivable; losing the daemon is not.

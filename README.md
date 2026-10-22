@@ -388,7 +388,13 @@ This bridge is a remote shell. Treat these as non-negotiable:
 python3 -m pytest tests -q        # the offline suite, 578 tests
 python3 -m pytest -m live          # 10 checks against a real server
 python3 -m ruff check .
+mypy                               # the type gate (pipx install mypy)
+bandit -c pyproject.toml -r bridge.py bridgekit scripts   # the security scan
 ```
+
+The pre-commit hook runs all of these: style, types, the security scan, and
+the offline suite. `mypy`/`bandit` skip themselves with a note if they are
+not installed, so the hook degrades gracefully rather than failing.
 
 Every commit is guarded: `core.hooksPath` points at the tracked `hooks/`
 directory, and the pre-commit hook runs ruff plus the offline suite. A red

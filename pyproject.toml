@@ -18,3 +18,22 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+# The type gate over the shipped surface (bridge, library, ops scripts).
+# Tests are deliberately excluded: they build object graphs mypy would
+# want runtime asserts for, and none of it ships.
+files = ["bridge.py", "bridgekit", "scripts"]
+show_error_codes = true
+
+[tool.bandit]
+# The hook scans the shipped surface explicitly:
+#   bandit -c pyproject.toml -r bridge.py bridgekit scripts
+# The `targets` key is NOT honored by bandit for pyproject files (an observed
+# fact, not an opinion: a full-repo run with targets set still scanned
+# tests/), which is why the hook names the paths itself. exclude_dirs keeps
+# ad-hoc repo-wide runs honest too. The accepted findings - the STT
+# shell=True and the watchdog's fixed-argv subprocess calls - stay suppressed
+# inline with `# nosec` comments documenting why, so the gate scans clean
+# without a blanket skip.
+exclude_dirs = ["tests", ".backup", "backups"]

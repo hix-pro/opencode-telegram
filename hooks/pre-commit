@@ -1,8 +1,31 @@
 #!/bin/sh
-# Red suite never lands: style check, then the offline tests.
-# The pytest config excludes live tests by default (-m 'not live').
+# Red_suite_never_lands: style + types + security scan, then the offline
+# tests. The pytest config excludes live tests by default (-m 'not live').
 # Emergency bypass: git commit --no-verify.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 python3 -m ruff check .
+
+# The type gate: mypy whichever way it is installed (pipx venv is not on the
+# default path). Absent entirely, it is skipped with a note rather than
+# blocking a commit on tooling that never existed here.
+if command -v mypy >/dev/null 2>&1; then
+    mypy
+elif [ -x "$HOME/.local/bin/mypy" ]; then
+    "$HOME/.local/bin/mypy"
+else
+    echo "mypy not installed - type gate skipped (pipx install mypy; pipx inject mypy types-requests)"
+fi
+
+# The security scan: shipped code only - repo-wide runs would just flood the
+# gate with the tests' own asserts. bandit expects to be found either as a
+# module of the system python or on PATH, whichever exists.
+if python3 -m bandit --version >/dev/null 2>&1; then
+    python3 -m bandit -q -c pyproject.toml -r bridge.py bridgekit scripts
+elif command -v bandit >/dev/null 2>&1; then
+    bandit -q -c pyproject.toml -r bridge.py bridgekit scripts
+else
+    echo "bandit not installed - security scan skipped (pip3 install --user bandit)"
+fi
+
 python3 -m pytest -q

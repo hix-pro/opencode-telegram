@@ -158,7 +158,7 @@ class Policy:
 
     def snapshot(self, chat_id: str = "") -> dict:
         """Serialisable state, for persistence across restarts."""
-        data = {"mode": self.mode, "deny": list(self.deny)}
+        data: dict[str, object] = {"mode": self.mode, "deny": list(self.deny)}
         if chat_id:
             data["rules"] = dict(self.rules_for(chat_id))
         else:

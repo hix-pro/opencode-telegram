@@ -81,13 +81,20 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
 
         report.results.append(_timed("Create session", make_session))
 
+        # Everything after this point needs the real session id; make_session
+        # already succeeded as a timed result, and a missing id is a hard
+        # failure of the selftest, not something to probe with None.
+        if not session_id:
+            raise AssertionError("the server returned no session id")
+        sid = str(session_id)
+
         def turn():
             submitted = int(time.time() * 1000)
-            api.send_prompt(session_id, "Reply with exactly: selftest-ok")
+            api.send_prompt(sid, "Reply with exactly: selftest-ok")
             deadline = time.time() + 120
             text = ""
             while time.time() < deadline:
-                text = OpenCode.assistant_text(api.messages(session_id, 20, "desc"), submitted)
+                text = OpenCode.assistant_text(api.messages(sid, 20, "desc"), submitted)
                 if text:
                     return f"replied in {int(time.time() - submitted // 1000)}s"
                 time.sleep(0.5)
@@ -95,9 +102,7 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
 
         report.results.append(_timed("Prompt round-trip", turn))
 
-        report.results.append(
-            _timed("Event stream deltas", lambda: _probe_events(api, session_id))
-        )
+        report.results.append(_timed("Event stream deltas", lambda: _probe_events(api, sid)))
 
         def filesystem():
             from . import localfs
