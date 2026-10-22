@@ -362,7 +362,7 @@ Manual smoke test at any time:
 
 ```bash
 python3 scripts/heartbeat_watchdog.py .bridge-heartbeat
-journalctl --user -u opencode-watchdog.service -n 5
+journalctl --user-unit opencode-watchdog.service -n 5
 ```
 
 Retire it with `systemctl --user disable --now opencode-watchdog.timer`
