@@ -69,6 +69,13 @@ SCHEDULE_TICK = 60
 # than briefly busy. Five polls at the default 2s cadence is about ten seconds.
 MAX_TRANSPORT_FAILURES = 5
 
+# Reactions that steer the bridge without typing. Approve answers every
+# pending permission request for the chat once; stop interrupts the turn
+# that is running. Only a newly *added* reaction acts, so removing one
+# never repeats anything.
+APPROVE_REACTIONS = frozenset({"👍"})
+STOP_REACTIONS = frozenset({"👎", "🛑"})
+
 
 @dataclass
 class Health:
@@ -154,6 +161,7 @@ class Bridge:
         self._report_orphaned_turns()
 
         self.config.attachments_dir.mkdir(parents=True, exist_ok=True)
+        self._publish_command_list()
 
         if self.config.stream_enabled:
             self.events.start()
@@ -290,6 +298,32 @@ class Bridge:
         if reply:
             self.send(chat_id, reply)
 
+    def _publish_command_list(self) -> None:
+        """Publish commands and the menu button so the UI knows what exists.
+
+        Telegram autocompletes slash commands from the bot's command list,
+        which the bridge owns but never told Telegram about; every command
+        had to be remembered by hand. The Menu button becomes the command
+        keyboard, the one discoverable control when nothing else is known.
+        Cosmetic: failures are logged and the bridge runs on.
+        """
+        entries = [
+            {"command": cmd.name, "description": cmd.summary}
+            for cmd in sorted(commands.REGISTRY.values(), key=lambda c: c.name)
+        ]
+        published = self.telegram.set_my_commands(entries)
+        menus = sum(
+            1
+            for chat_id in self.config.allowed_chats
+            if self.telegram.set_menu_button(chat_id)
+        )
+        log.info(
+            "Published %d commands (autocomplete %s); menu button on %d chat(s)",
+            len(entries),
+            "on" if published else "FAILED",
+            menus,
+        )
+
     # ---------------------------------------------------------------- helpers
 
     def abort_flag(self, chat_id: str) -> threading.Event:
@@ -395,6 +429,10 @@ class Bridge:
             self._handle_callback(update["callback_query"])
             return
 
+        if "message_reaction" in update:
+            self._handle_reaction(update["message_reaction"])
+            return
+
         message = update.get("message")
         if not message:
             return
@@ -450,6 +488,60 @@ class Bridge:
                 log.exception("Callback %s failed", action)
 
     # ---------------------------------------------------------- attachments
+
+    def _handle_reaction(self, reaction: dict) -> None:
+        """A reaction carries the two actions people reach for fastest.
+
+        Approve answers every pending permission request; stop interrupts
+        the running turn. Telegram only delivers these updates because
+        :data:`telegram.ALLOWED_UPDATES` includes ``message_reaction``.
+        Only allow-listed people in allow-listed chats count, and only a
+        newly added reaction acts - removing one must never repeat an
+        action.
+        """
+        chat_id = str((reaction.get("chat") or {}).get("id", ""))
+        if chat_id not in self.config.allowed_chats:
+            return
+        reactor = str((reaction.get("user") or {}).get("id", "") or chat_id)
+        if reactor not in self.config.allowed_chats:
+            return
+        emojis = [str(r.get("emoji") or "") for r in reaction.get("new_reaction") or []]
+        if not emojis:
+            return
+        if any(emoji in APPROVE_REACTIONS for emoji in emojis):
+            self._approve_all_pending(chat_id)
+        if any(emoji in STOP_REACTIONS for emoji in emojis):
+            self._stop_turn(chat_id)
+
+    def _approve_all_pending(self, chat_id: str) -> None:
+        """Approve everything pending in this chat's directory, once each."""
+        try:
+            pending = self.api.permission_requests(directory=self.state.directory(chat_id))
+        except ApiError as exc:
+            log.warning("Reaction approval listing failed: %s", exc)
+            self.send(chat_id, f"! Could not list pending approvals: {exc.message}")
+            return
+        targets = [request for request in pending or [] if request.get("id")]
+        if not targets:
+            self.send(chat_id, "Nothing waiting for approval.")
+            return
+        for request in targets:
+            self._reply_permission(chat_id, str(request["id"]), "once", request)
+
+    def _stop_turn(self, chat_id: str) -> None:
+        """Interrupt whatever is running here - the typing-free /abort."""
+        session = self.state.session(chat_id)
+        if not session:
+            self.send(chat_id, "Nothing is running.")
+            return
+        self.abort_flag(chat_id).set()
+        try:
+            self.api.interrupt_session(session)
+        except ApiError as exc:
+            log.warning("Interrupt failed: %s", exc)
+            self.send(chat_id, f"! Could not interrupt the turn: {exc.message}")
+            return
+        self.send(chat_id, "Stopping - the turn is being interrupted.")
 
     def _handle_attachment(
         self, chat_id: str, message: dict, file_id: str, name: str, kind: str

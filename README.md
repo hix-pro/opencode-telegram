@@ -76,6 +76,11 @@ python3 bridge.py
 Send `/doctor` to your bot. It reports the server, session, policy, event
 stream, permission watcher and scheduler in one message.
 
+**No setup needed beyond that:** on start the bridge publishes its command list
+to Telegram, so every `/` you type autocompletes with a description, and the
+chat's Menu button opens as a command keyboard - the one discoverable control
+when you've forgotten what this bot can do.
+
 ### Day-to-day
 
 ```bash
@@ -223,6 +228,20 @@ buttons. Three layers decide an answer, in order:
 
 Rules are per chat, so a shared bot can be strict for one person and relaxed
 for another.
+
+### Reactions
+
+The two commands you reach for fastest need no typing at all. React - to any
+message in the chat:
+
+| Reaction | Effect |
+|---|---|
+| 👍 | Approve **every** pending permission request (once each) |
+| 👎 or 🛑 | Abort the running turn |
+
+Only allow-listed people in allow-listed chats count, so a shared chat is not
+opened to whoever finds the bot. Only a newly *added* reaction acts: removing
+an emoji never repeats anything, and any other emoji is ignored.
 
 ### Help
 

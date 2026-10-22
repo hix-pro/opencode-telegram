@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 import requests
@@ -24,6 +25,15 @@ EDIT_BURST = 25
 
 # How long throttle bookkeeping is kept per message.
 EDIT_MEMORY_SECONDS = 600.0
+
+# The update types the bridge consumes. message_reaction is not in
+# Telegram's default set, so reactions would silently never arrive
+# without asking for it here.
+ALLOWED_UPDATES = ("message", "callback_query", "message_reaction")
+
+# One command list per bot: autocomplete stops being offered past these.
+MAX_COMMANDS = 100
+MAX_COMMAND_DESC = 256
 
 
 class TelegramError(RuntimeError):
@@ -71,10 +81,20 @@ class Telegram:
 
     # ------------------------------------------------------------------ reads
 
-    def get_updates(self, offset: int, timeout: int = 30) -> list[dict]:
+    def get_updates(
+        self,
+        offset: int,
+        timeout: int = 30,
+        allowed_updates: Iterable[str] = ALLOWED_UPDATES,
+    ) -> list[dict]:
+        params: dict = {"offset": offset, "timeout": timeout}
+        if allowed_updates is not None:
+            # Requests encodes a tuple as repeated keys, which is how the
+            # Bot API reads sets in a query string.
+            params["allowed_updates"] = tuple(allowed_updates)
         resp = self._http.get(
             self.base + "/getUpdates",
-            params={"offset": offset, "timeout": timeout},
+            params=params,
             timeout=timeout + 15,
         )
         if resp.status_code == 409:
@@ -211,6 +231,53 @@ class Telegram:
             )
         except requests.RequestException as exc:
             log.debug("answerCallbackQuery failed: %s", exc)
+
+    # ------------------------------------------------------- bot cosmetics
+
+    def set_my_commands(self, commands: list[dict]) -> bool:
+        """Publish the command list Telegram autocompletes from.
+
+        Best effort: a failure is logged and the bridge runs on, because a
+        missing autocomplete list is never worth crashing a start over.
+        """
+        entries = [
+            {
+                "command": str(entry["command"])[:32],
+                "description": str(entry["description"])[:MAX_COMMAND_DESC],
+            }
+            for entry in commands[:MAX_COMMANDS]
+            if entry.get("command")
+        ]
+        if not entries:
+            return False
+        return self._post_ok("setMyCommands", {"commands": entries})
+
+    def set_menu_button(self, chat_id: str) -> bool:
+        """Turn a chat's Menu button into the command keyboard."""
+        return self._post_ok(
+            "setChatMenuButton",
+            {
+                "chat_id": chat_id,
+                "menu_button": {"type": "commands"},
+            },
+        )
+
+    def _post_ok(self, method: str, payload: dict) -> bool:
+        """A cosmetic POST: never raises, always tells whether it landed."""
+        try:
+            resp = self._http.post(
+                self.base + "/" + method, json=payload, timeout=self.timeout
+            )
+        except (OSError, requests.exceptions.RequestException) as exc:
+            # OSError rather than RequestException alone: the built-in
+            # ConnectionError is not a subclass of it, and a network error
+            # must not propagate into startup.
+            log.warning("%s transport error: %s", method, exc)
+            return False
+        if resp.status_code >= 400:
+            log.warning("%s failed (%s): %s", method, resp.status_code, _safe_detail(resp))
+            return False
+        return True
 
     # ------------------------------------------------------------------ files
 

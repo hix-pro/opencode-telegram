@@ -34,10 +34,20 @@ class FakeTelegram:
         self.edit_succeeds = edit_succeeds
         self.edit_failures = 0
         self.rate_limited = 0
+        self.menu_buttons: list[str] = []
 
     def send(self, chat_id, text, reply_markup=None):
         self.sent.append(text)
         return 1
+
+    def set_my_commands(self, commands):
+        """Recorded through sent; the args are what `/help` would show."""
+        self._published = list(commands)
+        return True
+
+    def set_menu_button(self, chat_id):
+        self.menu_buttons.append(chat_id)
+        return True
 
     def edit(self, chat_id, message_id, text, reply_markup=None, force=False):
         if not self.edit_succeeds:
