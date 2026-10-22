@@ -13,12 +13,14 @@ import queue
 import threading
 import time
 
+import pytest
+
 from bridgekit.config import Config
 from bridgekit.keyboards import Router
 from bridgekit.policy import Policy
 from bridgekit.schedule import ScheduleStore
 from bridgekit.state import State
-from bridgekit.telegram import Telegram
+from bridgekit.telegram import Telegram, TelegramError
 
 CHAT = "42"
 
@@ -55,6 +57,7 @@ class FakeTelegram:
 
 
 class StubEvents:
+    last_error = ""
     connected = True
     frames = 0
     reconnects = 0
@@ -266,6 +269,63 @@ def test_throttled_edit_is_skipped_locally():
     assert client.edit("42", 1, "b") is False  # too soon
     assert client.edit("42", 1, "c", force=True) is True
     assert len(client._http.posts) == 2
+
+
+# ------------------------------------------------------------------ send 429s
+
+
+class SequenceSession:
+    """Scripted posts: each call pops the next response off the queue."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.posts = 0
+
+    def post(self, url, json=None, timeout=None):
+        self.posts += 1
+        return self.responses.pop(0)
+
+
+def test_send_survives_a_malformed_429_body(monkeypatch):
+    """A proxy eating the error body must retry, not escalate to ValueError.
+
+    Before the fix a non-JSON 429 escaped as an unhandled ValueError -
+    which, arriving mid-turn, failed the whole turn for want of one retry.
+    """
+    monkeypatch.setattr("bridgekit.telegram.time.sleep", lambda s: None)
+    broken = _Response.__new__(_Response)
+    broken.status_code = 429
+    broken.text = "<html>rate limited</html>"
+    broken.content = b"<html>"
+
+    def broken_json():
+        raise ValueError("Expecting value")
+
+    broken.json = broken_json
+    ok = _Response(200, {"result": {"message_id": 9}})
+    client = Telegram("token")
+    client._http = SequenceSession([broken, ok])
+    assert client.send("42", "hello") == 9
+    assert client._http.posts == 2
+
+
+def test_send_survives_a_null_retry_parameters(monkeypatch):
+    """`"parameters": null` must not crash on None.get() either."""
+    monkeypatch.setattr("bridgekit.telegram.time.sleep", lambda s: None)
+    client = Telegram("token")
+    client._http = SequenceSession([_Response(429, {"parameters": None})] * 4)
+    with pytest.raises(TelegramError, match="4 attempts"):
+        client.send("42", "hello")
+
+
+def test_send_still_gives_up_after_four_throttles(monkeypatch):
+    """Persistent throttling raises TelegramError the caller can report."""
+    monkeypatch.setattr("bridgekit.telegram.time.sleep", lambda s: None)
+    client = Telegram("token")
+    client._http = SequenceSession([_Response(429, {"parameters": {"retry_after": 1}})] * 4)
+    with pytest.raises(TelegramError):
+        client.send("42", "hello")
+    assert client._http.posts == 4
 
 
 def test_default_edit_interval_respects_the_telegram_limit():

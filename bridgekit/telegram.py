@@ -108,7 +108,10 @@ class Telegram:
                 self.base + "/sendMessage", json=payload, timeout=self.timeout
             )
             if resp.status_code == 429:
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                # _safe_retry_after, not a bare resp.json(): a malformed body
+                # used to escape as ValueError and abort the whole turn
+                # instead of simply waiting its turn.
+                retry_after = _safe_retry_after(resp, default=5.0)
                 log.warning("Rate limited; sleeping %ss", retry_after)
                 time.sleep(retry_after)
                 continue
