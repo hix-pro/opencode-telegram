@@ -146,6 +146,30 @@ class Command:
 
 REGISTRY: dict[str, Command] = {}
 
+# The commands Telegram autocomplete offers in the input bar. REGISTRY is
+# the whole book (48 entries and growing); the phone keyboard only needs
+# the ones a person types daily - 48 suggestions scrolling in the bar is
+# its own bug. /help stays the complete reference for the rest.
+PRIMARY_COMMANDS = frozenset(
+    {
+        "abort",
+        "auto",
+        "health",
+        "help",
+        "model",
+        "new",
+        "no",
+        "perms",
+        "revert",
+        "schedule",
+        "sessions",
+        "sh",
+        "status",
+        "use",
+        "yes",
+    }
+)
+
 # Longest a /sh command may run before the bridge stops waiting.
 SHELL_TIMEOUT = 60
 

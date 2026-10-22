@@ -303,13 +303,16 @@ class Bridge:
 
         Telegram autocompletes slash commands from the bot's command list,
         which the bridge owns but never told Telegram about; every command
-        had to be remembered by hand. The Menu button becomes the command
-        keyboard, the one discoverable control when nothing else is known.
+        had to be remembered by hand. The list is the *daily* commands
+        (:data:`commands.PRIMARY_COMMANDS`), not the whole registry - the
+        input bar is a suggestion bar, not a book, and /help stays the
+        complete reference. The Menu button becomes the command keyboard,
+        the one discoverable control when nothing else is known.
         Cosmetic: failures are logged and the bridge runs on.
         """
         entries = [
-            {"command": cmd.name, "description": cmd.summary}
-            for cmd in sorted(commands.REGISTRY.values(), key=lambda c: c.name)
+            {"command": name, "description": commands.REGISTRY[name].summary}
+            for name in sorted(commands.PRIMARY_COMMANDS)
         ]
         published = self.telegram.set_my_commands(entries)
         menus = sum(

@@ -11,6 +11,7 @@ from __future__ import annotations
 from conftest import FakeAPI
 from test_delivery import CHAT, FakeTelegram, build_bridge
 
+from bridgekit import commands as C
 from bridgekit.api import ApiError
 from bridgekit.telegram import ALLOWED_UPDATES, Telegram
 
@@ -128,14 +129,22 @@ def test_ignore_unknown_update_types(tmp_path):
 # ---------------------------------------------------------------- publish
 
 
-def test_autocomplete_lists_the_whole_registry(tmp_path):
+def test_autocomplete_lists_the_daily_commands(tmp_path):
+    """The input bar gets the curated list, not the whole 48-entry book."""
     bridge = build_bridge(tmp_path, FakeTelegram())
     bridge._publish_command_list()
     published = bridge.telegram._published
     names = [entry["command"] for entry in published]
-    assert "help" in names and "status" in names
-    assert names == sorted(names)
+    assert names == sorted(C.PRIMARY_COMMANDS)
+    assert 10 <= len(names) <= 20, "a flood defeats the point; a stub is invisible"
+    assert "help" in names and "yes" in names
     assert all(len(entry["description"]) <= 256 for entry in published)
+    # A typo in the curated set would silently drop a command from
+    # autocomplete; the suite must catch that the day it happens.
+    assert set(C.PRIMARY_COMMANDS) <= set(C.REGISTRY), (
+        "PRIMARY_COMMANDS names commands that do not exist in REGISTRY: "
+        + ", ".join(sorted(set(C.PRIMARY_COMMANDS) - set(C.REGISTRY)))
+    )
 
 
 def test_menu_button_is_set_for_each_allowed_chat(tmp_path):
