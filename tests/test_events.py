@@ -184,6 +184,7 @@ def test_reconnected_stream_reports_recovery(monkeypatch, caplog):
     monkeypatch.setattr(events.time, "sleep", lambda s: None)
 
     stream = events.EventStream("http://127.0.0.1:1", ("opencode", "pw"))
+    stream.min_lively = 0  # the fake stream is an instant close; treat as lived
     calls = {"n": 0}
 
     def flaky(*args, **kwargs):
@@ -214,3 +215,38 @@ def test_start_is_idempotent(monkeypatch, stream):
     time.sleep(0.05)
     assert len(started) == 1
     stream.stop()
+
+
+def test_the_stream_is_decoded_as_utf_8(monkeypatch, stream):
+    """SSE is UTF-8 by spec, but requests falls back to ISO-8859-1 for a
+    text/* response with no charset - which OpenCode sends. Every non-ASCII
+    delta would arrive as mojibake; pin the forced encoding instead."""
+    seen = {}
+
+    class Resp(FakeResponse):
+        def __init__(self):
+            super().__init__([frame("session.text.delta")])
+            self.encoding = "ISO-8859-1"  # what requests guesses without a charset
+
+    def fake_get(*args, **kwargs):
+        return seen.setdefault("resp", Resp())
+
+    monkeypatch.setattr(events.requests, "get", fake_get)
+    stream._consume()
+    assert seen["resp"].encoding == "utf-8"
+
+
+def test_an_instant_clean_close_counts_as_a_drop(monkeypatch):
+    """A server can accept the connection and close it without streaming.
+    That used to reset backoff to 1s and show spotless health counters."""
+    monkeypatch.setattr(events.time, "sleep", lambda s: None)
+    monkeypatch.setattr(events.requests, "get", lambda *a, **k: FakeResponse([]))
+
+    stream = events.EventStream("http://127.0.0.1:1", ("opencode", "pw"))
+    stream._stop = _FakeStop(after=3)
+    stream._run()
+
+    assert stream.reconnects == 1
+    assert stream.drops == 1
+    assert stream.connected is False
+    assert "closed after" in stream.last_error

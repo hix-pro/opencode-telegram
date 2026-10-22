@@ -27,6 +27,13 @@ log = logging.getLogger("bridge.events")
 BACKOFF_MIN = 1.0
 BACKOFF_MAX = 30.0
 
+# Below this lifetime, a clean stream return is not a success: the server
+# accepted the connection and closed it without ever really streaming (EOF
+# on connect, a hung backend behind a socket proxy). Count it as a failure,
+# or a broken endpoint would sit in a 1-second reconnect loop with spotless
+# health counters.
+MIN_LIVELY_SECONDS = 30.0
+
 # Event types the bridge reacts to.
 EXECUTION_STARTED = "session.execution.started"
 EXECUTION_SUCCEEDED = "session.execution.succeeded"
@@ -54,6 +61,8 @@ class EventStream:
         self.auth = auth
         self.timeout = timeout
         self.connect_timeout = connect_timeout
+        # A copy, so tests can relax the liveness rule per instance.
+        self.min_lively = MIN_LIVELY_SECONDS
 
         self._listeners: dict[str, list] = {}
         self._lock = threading.Lock()
@@ -98,9 +107,9 @@ class EventStream:
     def _run(self) -> None:
         backoff = BACKOFF_MIN
         while not self._stop.is_set():
+            started = time.monotonic()
             try:
                 self._consume()
-                backoff = BACKOFF_MIN
             except requests.exceptions.RequestException as exc:
                 self.connected = False
                 self.reconnects += 1
@@ -109,6 +118,20 @@ class EventStream:
                 self.connected = False
                 self.reconnects += 1
                 self._note_drop(exc, error=True)
+            else:
+                lifetime = time.monotonic() - started
+                if lifetime < self.min_lively and not self._stop.is_set():
+                    # Clean return, but the stream never really lived. This
+                    # used to read as a success and reset the backoff to 1s
+                    # against a broken endpoint, with spotless counters.
+                    self.connected = False
+                    self.reconnects += 1
+                    self._note_drop(RuntimeError(f"stream closed after {lifetime:.1f}s"))
+                else:
+                    # A connection that held for a while: the outage is over.
+                    self.drops = 0
+                    self.last_error = ""
+                    backoff = BACKOFF_MIN
 
             if self._stop.is_set():
                 break
@@ -142,10 +165,15 @@ class EventStream:
             headers={"Accept": "text/event-stream"},
         ) as resp:
             resp.raise_for_status()
+            # SSE is UTF-8 by specification, but requests guesses the charset
+            # of a text/* response from headers and falls back to
+            # ISO-8859-1 when the server sends no charset - which OpenCode
+            # does not. Without this line, every non-ASCII delta would
+            # arrive as mojibake.
+            resp.encoding = "utf-8"
             self.connected = True
             extra = f" after {self.drops} failed attempt(s)" if self.drops else ""
             log.info("Event stream connected%s", extra)
-            self.drops = 0
             self.last_error = ""
 
             for raw in resp.iter_lines(decode_unicode=True):
