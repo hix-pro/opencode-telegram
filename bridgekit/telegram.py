@@ -378,12 +378,31 @@ def _utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
+def _prefix_within(text: str, budget: int) -> tuple[int, int]:
+    """Longest prefix of *text* measuring <= *budget* UTF-16 units.
+
+    Returns (characters used, units used). Runs in O(len(prefix)) with a
+    running count instead of re-encoding each candidate prefix, which is
+    what kept the hard split quadratic for a reply that contained one
+    very long line (base64 blobs, minified output).
+    """
+    units = 0
+    for index, ch in enumerate(text):
+        cost = 2 if ord(ch) > 0xFFFF else 1
+        if units + cost > budget:
+            return index, units
+        units += cost
+    return len(text), units
+
+
 def split_message(text: str, limit: int = 4096) -> list[str]:
     """Split text into chunks that fit Telegram's limit.
 
     Prefers paragraph, then line, then hard character boundaries so markdown
     fences and bullets survive the split, and measures in UTF-16 units so
-    emoji-heavy replies are chunked before Telegram rejects them.
+    emoji-heavy replies are chunked before Telegram rejects them. The scan
+    is linear in the message size: unit counts are carried forward between
+    cuts rather than recomputed.
     """
     if _utf16_len(text) <= limit:
         return [text]
@@ -406,16 +425,17 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
             buffer = ""
 
     for line in text.splitlines(keepends=True):
-        # A single line may still be far too long on its own.
-        while not fits(line):
+        # A single line may still be far too long on its own; its unit
+        # total is carried between cuts, so each cut costs one prefix walk.
+        units_left = _utf16_len(line)
+        while units_left > safe:
             flush()
-            take = len(line)
-            while take > 0 and not fits(line[:take]):
-                take -= 1
+            take, used = _prefix_within(line, safe)
             if take == 0:  # one unit still too big; emit it and move on
-                take = 1
+                take, used = 1, _utf16_len(line[:1])
             chunks.append(line[:take])
             line = line[take:]
+            units_left -= used
         if not fits(buffer + line):
             flush()
         buffer += line
