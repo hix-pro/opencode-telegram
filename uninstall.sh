@@ -24,6 +24,14 @@ if systemctl --user is-active --quiet "$UNIT_NAME"; then
     info "service stopped"
 fi
 
+# The watchdog depends on nothing, but it would keep scanning for a bridge
+# that no longer exists - take it with the service.
+if systemctl --user is-active --quiet opencode-watchdog.timer 2>/dev/null; then
+    systemctl --user disable --now opencode-watchdog.timer >/dev/null 2>&1 || true
+    info "watchdog timer disabled"
+fi
+rm -f "$UNIT_DIR/opencode-watchdog.service" "$UNIT_DIR/opencode-watchdog.timer"
+
 systemctl --user disable "$UNIT_NAME" >/dev/null 2>&1 || true
 rm -f "$UNIT_DIR/$UNIT_NAME"
 systemctl --user daemon-reload

@@ -41,15 +41,42 @@ if [ ! -f "$HERE/.env" ]; then
     fi
 fi
 
+# The unit files are rendered from the repo's templates so a checkout may
+# live anywhere. But systemd's WorkingDirectory=/EnvironmentFile= take raw
+# paths and cannot be quoted (only ExecStart= arguments can), so a checkout
+# inside a path with spaces gets a space-free alias symlink first - the same
+# trick this machine's own install needed. Paths without spaces are used raw.
+UNIT_REPO="$HERE"
+if [[ "$HERE" =~ [[:space:]] ]]; then
+    UNIT_ALIAS="$HOME/.opencode-bridge"
+    ln -sfn "$HERE" "$UNIT_ALIAS"
+    UNIT_REPO="$UNIT_ALIAS"
+    info "space-free unit alias: $UNIT_ALIAS -> $HERE"
+fi
+PYTHON_BIN="$(command -v python3)"
+render_unit() {
+    python3 - "$1" "$2" "$UNIT_REPO" "$PYTHON_BIN" << 'PY'
+import sys
+src, dst, repo, python = sys.argv[1:5]
+out = (
+    open(src).read()
+    .replace("@REPO@", repo)
+    .replace("@PYTHON@", python)
+)
+with open(dst, "w") as fh:
+    fh.write(out)
+PY
+}
+
 # ------------------------------------------------------------------- service
 mkdir -p "$UNIT_DIR"
-cp "$HERE/systemd/$UNIT_NAME" "$UNIT_DIR/$UNIT_NAME"
-info "unit installed to $UNIT_DIR/$UNIT_NAME"
+render_unit "$HERE/systemd/$UNIT_NAME.in" "$UNIT_DIR/$UNIT_NAME"
+info "unit generated to $UNIT_DIR/$UNIT_NAME"
 
 # The watchdog timer restarts a hung-but-still-"active" bridge (crashes are
 # already covered by Restart=always). Both files are idempotent to reinstall.
 WATCHDOG=opencode-watchdog
-cp "$HERE/systemd/$WATCHDOG.service" "$UNIT_DIR/$WATCHDOG.service"
+render_unit "$HERE/systemd/$WATCHDOG.service.in" "$UNIT_DIR/$WATCHDOG.service"
 cp "$HERE/systemd/$WATCHDOG.timer" "$UNIT_DIR/$WATCHDOG.timer"
 info "watchdog units installed to $UNIT_DIR"
 

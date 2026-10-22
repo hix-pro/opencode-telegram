@@ -1,5 +1,9 @@
 # OpenCode Telegram bridge
 
+> This project is not built by the OpenCode team and is not affiliated with
+> them in any way. It is an independent community tool that talks to the
+> OpenCode server via its local HTTP API.
+
 Full remote control of a local OpenCode server from Telegram: live streaming of
 what the agent is doing, the whole command surface the TUI has, session
 switching, model and agent switching, and permission approvals from your phone.
@@ -60,7 +64,8 @@ $EDITOR .env          # fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 ./install.sh
 ```
 
-That checks your prerequisites, installs the systemd unit, and starts the
+That checks your prerequisites, generates the systemd units from the repo's
+templates (any checkout location works, spaces included), and starts the
 service. It is safe to re-run after an upgrade and never overwrites your `.env`
 or your state file.
 
@@ -456,7 +461,7 @@ Layout:
 | `bridgekit/attachments.py` | Photo, document, and voice handling |
 | `bridgekit/keyboards.py` | Inline keyboards and callback routing |
 | `bridgekit/localfs.py` | Local file access for /ls /read /find /write |
-| `systemd/` | The service definition, so a rebuild is reproducible |
+| `systemd/` | Unit templates - install.sh renders them into your user manager |
 | `install.sh`, `uninstall.sh` | Install or remove the service |
 | `tests/test_live.py` | Opt-in contract checks against a real server |
 | `bridgekit/telegram.py` | Bot API client, chunking, edit throttling |
@@ -464,7 +469,6 @@ Layout:
 | `bridgekit/formatting.py` | Render helpers |
 | `bridgekit/schedule.py` | Recurring schedules |
 | `bridgekit/selftest.py` | End-to-end checks behind `/selftest` |
-| `backup-essential.sh` | Copies credentials, envs and source to `~/backups/essential` |
 
 Legacy snapshots (credential copies included) live outside the repository at
 `~/backups/legacy-bridge-snapshots/`, where a `git clean` cannot touch them.

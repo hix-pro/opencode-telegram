@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.2.3 — 2026-10-22
+
+Release readiness: the repo becomes publishable as-is, with no behavioral
+change on an existing install.
+
+### Added
+
+- **MIT license.** The tree was legally unshareable without one.
+- **Portable units.** `install.sh` now *generates* both systemd units from
+  `systemd/*.service.in` templates - any checkout location works, spaces
+  included (a space-free alias symlink is created because systemd cannot
+  quote `WorkingDirectory`/`EnvironmentFile`). The hardcoded
+  `Requires=opencode-server.service` dependency became a soft `Wants=` so a
+  foreign machine without the unit boots anyway. `uninstall.sh` removes the
+  watchdog pair too.
+- **Affiliation disclaimer** in the README, as the OpenCode team asks of
+  independently built `opencode-*` projects.
+
+### Fixed
+
+- **The tests were pinned to one machine.** Six test files hardcoded
+  `/home/demo`; two of them (config validation, `/use` switching) only
+  passed because that path happened to exist there. Everything now runs on
+  any machine: fake directories use hermetic helpers (`tmp_path`,
+  `tempfile.gettempdir()`), and config tests no longer lean on a real home
+  directory to satisfy existence validation.
+- `.env.example` examples and the tests use neutral paths. The maintainer's
+  personal backup script stays useful locally (gitignored) and out of the
+  published tree.
+
 ## v2.2.2 — 2026-10-22
 
 The ops round: two missing operational rolls. A hung bridge had nowhere to
