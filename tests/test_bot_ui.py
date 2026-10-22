@@ -12,6 +12,7 @@ from conftest import FakeAPI
 from test_delivery import CHAT, FakeTelegram, build_bridge
 
 from bridgekit import commands as C
+from bridgekit import keyboards
 from bridgekit.api import ApiError
 from bridgekit.telegram import ALLOWED_UPDATES, Telegram
 
@@ -226,6 +227,53 @@ def test_sessions_reply_arrives_with_its_markup(tmp_path):
 
     assert len(bridge.telegram.markups) == 1
     assert bridge.telegram.markups[0] is not None
+
+
+# -------------------------------------------------------------------- menu
+
+
+def test_menu_labels_map_to_their_commands():
+    assert keyboards.from_menu("📋 Status") == "/status"
+    assert keyboards.from_menu("🗂 Sessions") == "/sessions"
+    assert keyboards.from_menu("plain prompt") == "plain prompt"
+
+
+def test_tapping_status_on_the_menu_runs_status_not_a_prompt(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "📋 Status"}}
+    )
+
+    assert bridge.work.empty()
+    assert bridge.telegram.sent, "the status command answered"
+
+
+def test_tapping_sessions_on_the_menu_shows_switch_buttons(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "🗂 Sessions"}}
+    )
+
+    assert bridge.work.empty()
+    assert bridge.telegram.markups[-1] is not None
+
+
+def test_reply_menu_is_persistent_and_covers_every_label():
+    markup = keyboards.reply_menu_markup()
+
+    assert markup["is_persistent"] is True and markup["resize_keyboard"] is True
+    labels = [button["text"] for row in markup["keyboard"] for button in row]
+    assert set(labels) == set(keyboards.MENU_LABELS)
+
+
+def test_startup_mounts_the_menu_on_every_allowed_chat(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._mount_menu()
+
+    assert any("Bridge is live" in sent for sent in bridge.telegram.sent)
+    assert all(markup is not None for markup in bridge.telegram.markups)
 
 
 # ------------------------------------------------------------------ edits

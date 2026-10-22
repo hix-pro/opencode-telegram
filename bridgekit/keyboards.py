@@ -66,6 +66,38 @@ class Router:
 
 # --- Built-in keyboards -------------------------------------------------------
 
+# The pinned bottom keyboard. Telegram mirrors these labels back as plain
+# text, so labels must map to a home: the bridge canonicalises them into the
+# slash commands they stand for before running anything.
+MENU_LABELS = {
+    "📋 Status": "status",
+    "🗂 Sessions": "sessions",
+    "✨ New": "new",
+    "🛑 Abort": "abort",
+    "❓ Help": "help",
+}
+
+MENU_ROWS = [
+    ["📋 Status", "🗂 Sessions", "✨ New"],
+    ["🛑 Abort", "❓ Help"],
+]
+
+
+def reply_menu_markup() -> dict:
+    """The persistent main menu, attached once per chat at startup."""
+    return {
+        "keyboard": [[{"text": label} for label in row] for row in MENU_ROWS],
+        "resize_keyboard": True,
+        "is_persistent": True,
+        "input_field_placeholder": "Ask, or / for commands",
+    }
+
+
+def from_menu(text: str) -> str:
+    """Turn a menu label into the command it stands for."""
+    command = MENU_LABELS.get(text)
+    return f"/{command}" if command else text
+
 
 def session_list_markup(sessions: list, active_id: str | None = None) -> dict | None:
     """A switch button per recent session.

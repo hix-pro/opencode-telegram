@@ -162,6 +162,7 @@ class Bridge:
 
         self.config.attachments_dir.mkdir(parents=True, exist_ok=True)
         self._publish_command_list()
+        self._mount_menu()
 
         if self.config.stream_enabled:
             self.events.start()
@@ -338,6 +339,20 @@ class Bridge:
             menus,
         )
 
+    def _mount_menu(self) -> None:
+        """Attach the persistent main menu to each allowed chat.
+
+        A reply keyboard rides on a message, so the startup notice carries
+        it; every restart re-attaches and thus fingerprints the live
+        process. Telegram lets any client collapse it, so this never
+        blocks typing.
+        """
+        markup = keyboards.reply_menu_markup()
+        for chat_id in self.config.allowed_chats:
+            self.send(
+                chat_id, "Bridge is live.\nTap a menu button, or type / for commands.", markup
+            )
+
     # ---------------------------------------------------------------- helpers
 
     def abort_flag(self, chat_id: str) -> threading.Event:
@@ -469,6 +484,11 @@ class Bridge:
         text = (message.get("text") or "").strip()
         if not text:
             return
+
+        # A tap on the bottom keyboard arrives as its label; run what the
+        # label stands for. Unknown labels are not commands and need no
+        # translation.
+        text = keyboards.from_menu(text)
 
         if self.abort_flag(chat_id).is_set() and not text.startswith("/abort"):
             self.abort_flag(chat_id).clear()
