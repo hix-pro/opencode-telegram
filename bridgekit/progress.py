@@ -129,6 +129,21 @@ class TurnProgress:
         if note and note not in self.notes:
             self.notes.append(note)
 
+    def set_if_longer(self, text: str) -> None:
+        """Adopt polled text only when it is genuinely longer than what the
+        stream already delivered, under the lock.
+
+        Both writers of ``text`` run on different threads - deltas arrive on
+        the events thread, polled repairs on the turn thread - and the old
+        unconditional assignments interleaved with ``+= delta`` appends,
+        losing typed characters. Locked and length-gated keeps a healthy
+        stream authoritative while still repairing a turn whose stream died
+        partway through.
+        """
+        with self._lock:
+            if text and len(text.strip()) > len(self.text.strip()):
+                self.text = text
+
     def absorb_messages(self, messages: list[dict], since: int = 0) -> None:
         """Pull tool activity out of polled messages the stream did not carry.
 

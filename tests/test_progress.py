@@ -479,3 +479,17 @@ def test_ordinary_tools_are_still_only_summarised():
     )
     assert progress.prompts == []
     assert "ls -la" in progress.render()
+
+
+def test_polled_text_is_adopted_only_when_longer():
+    """set_if_longer keeps a healthy stream authoritative and repairs a
+    turn whose stream died - locked, so it cannot interleave with deltas."""
+    progress = TurnProgress()
+    progress.set_if_longer("short start")
+    assert progress.text == "short start"
+    progress.set_if_longer("tiny")  # shorter: ignored
+    assert progress.text == "short start"
+    progress.set_if_longer("")  # empty: ignored
+    assert progress.text == "short start"
+    progress.set_if_longer("the stream died, here is the full polled text")
+    assert progress.text == "the stream died, here is the full polled text"

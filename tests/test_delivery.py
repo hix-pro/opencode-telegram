@@ -148,6 +148,7 @@ def build_bridge(tmp_path, telegram):
     instance.health = B.Health(streaming=False)
     instance._lock = threading.Lock()
     instance.schedules = ScheduleStore()
+    instance.fatal = None
     return instance
 
 

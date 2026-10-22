@@ -111,8 +111,6 @@ class Bridge:
         # Set once the state file has been read; before that there is nothing
         # to restore and the config defaults stand.
         self._policy_restored = False
-        # Per-turn: ensures one cost alert per turn rather than one per poll.
-        self._cost_alerted = False
         self.schedules = ScheduleStore()
         self.work: queue.Queue[tuple[str, str, list | None]] = queue.Queue()
         self.stop_event = threading.Event()
@@ -439,13 +437,34 @@ class Bridge:
                 self.fatal = str(exc)
                 return
             except requests.HTTPError as exc:
-                # 401/403 is a bad token and 409 is another poller. Retrying
-                # forever just fills the journal: exit non-zero so systemd's
-                # start limit trips and the failure is visible.
                 status = getattr(getattr(exc, "response", None), "status_code", 0)
-                self.fatal = f"Telegram rejected polling: HTTP {status}"
-                log.error(self.fatal)
-                return
+                if status in (401, 403, 409):
+                    # 401/403 is a bad token and 409 is another poller.
+                    # Retrying forever just fills the journal: exit non-zero
+                    # so systemd's start limit trips and the failure is visible.
+                    self.fatal = f"Telegram rejected polling: HTTP {status}"
+                    log.error(self.fatal)
+                    return
+                # Everything else (429 throttling, 5xx, gateway hiccups) is
+                # transient: sleeping through it beats restarting the whole
+                # bridge, which previously bounced and re-announced itself
+                # every few seconds during a Telegram outage.
+                backoff = 5
+                if status == 429:
+                    try:
+                        body = exc.response.json()  # type: ignore[union-attr]
+                        params = (body.get("parameters") or {}) if body else {}
+                        backoff = max(backoff, int(params.get("retry_after") or 0))
+                    except (ValueError, AttributeError):
+                        pass
+                log.warning(
+                    "Telegram poll got HTTP %s; retrying in %ds: %s",
+                    status,
+                    backoff,
+                    exc.__class__.__name__,
+                )
+                time.sleep(backoff)
+                continue
             except OSError as exc:
                 log.warning("Telegram poll failed: %s", exc)
                 time.sleep(5)
@@ -455,8 +474,11 @@ class Bridge:
             for update in updates:
                 offset = update["update_id"] + 1
                 self._handle_update(update)
-            if updates:
-                self.state.save_offset(offset)
+                # Per update, not per batch: a crash mid-batch used to forfeit
+                # the acknowledged position of every update already handled in
+                # it, so those were replayed as duplicate turns on restart.
+                if updates:
+                    self.state.save_offset(offset)
 
     def _handle_update(self, update: dict) -> None:
         if "callback_query" in update:
@@ -699,24 +721,40 @@ class Bridge:
             try:
                 chat_id, text, files = self.work.get(timeout=1.0)
             except queue.Empty:
-                self.health.worker_alive = bool(self._workers)
+                # The dispatcher demonstrably ran this iteration, so the
+                # infrastructure is alive - the number of registered turn
+                # workers has nothing to do with that.
+                self.health.worker_alive = True
                 continue
 
             self.health.worker_alive = True
-            if self._chat_busy(chat_id):
-                # The chat is mid-turn. /delivery promises queueing, so hold
-                # the message rather than making the user retype it - and say
-                # so, because a silently delayed message looks like a dropped
-                # one.
-                backlog = self._backlog.setdefault(chat_id, [])
-                if len(backlog) < MAX_BACKLOG:
-                    backlog.append((chat_id, text, files))
-                    self.send(
-                        chat_id,
-                        "! Queued - I am still working on the previous message.",
-                    )
-                else:
-                    self.send(chat_id, "! Backlog full; send that again once I finish.")
+            # The busy check and the backlog append must be atomic against the
+            # turn worker's "pop worker + drain backlog" section: check-then-act
+            # used to straddle the turn end, so a message could be appended to a
+            # backlog tuple that had already been drained and was never sent.
+            queued = False
+            busy = False
+            with self._lock:
+                busy = self._chat_busy(chat_id)
+                if busy:
+                    backlog = self._backlog.setdefault(chat_id, [])
+                    if len(backlog) < MAX_BACKLOG:
+                        backlog.append((chat_id, text, files))
+                        queued = True
+            if not busy:
+                pass
+            elif queued:
+                # /delivery promises queueing, so hold the message rather than
+                # making the user retype it - and say so, because a silently
+                # delayed message looks like a dropped one.
+                self.send(
+                    chat_id,
+                    "! Queued - I am still working on the previous message.",
+                )
+                self.work.task_done()
+                continue
+            else:
+                self.send(chat_id, "! Backlog full; send that again once I finish.")
                 self.work.task_done()
                 continue
 
@@ -734,13 +772,6 @@ class Bridge:
             )
             thread.start()
             self.work.task_done()
-
-    def _drain_backlog(self, chat_id: str) -> None:
-        """Hand queued messages back to the dispatcher once a turn ends."""
-        with self._lock:
-            pending = self._backlog.pop(chat_id, [])
-        for item in pending:
-            self.work.put(item)
 
     def _chat_busy(self, chat_id: str) -> bool:
         worker = self._workers.get(chat_id)
@@ -760,10 +791,17 @@ class Bridge:
             self.send(chat_id, "! The turn failed; check the bridge log.")
         finally:
             self.clear_abort(chat_id)
+            # Pop the worker and drain the backlog as one step so a dispatcher
+            # arriving between the two either still sees this turn as busy (and
+            # appends to the backlog we then drain) or sees it free (and runs
+            # directly). The old pop-then-drain let an interleaved append land
+            # in a backlog nobody would ever revisit.
             with self._lock:
                 if self._workers.get(chat_id) is threading.current_thread():
                     self._workers.pop(chat_id, None)
-            self._drain_backlog(chat_id)
+                drained = self._backlog.pop(chat_id, [])
+            for item in drained:
+                self.work.put(item)
 
     def _run_turn(self, chat_id: str, text: str, files: list | None = None) -> None:
         session = self.ensure_session(chat_id)
@@ -779,7 +817,9 @@ class Bridge:
 
         watch = bool(self.state.pref(chat_id, "watch", True) and self.config.stream_enabled)
         progress = TurnProgress()
-        self._cost_alerted = False
+        # Per turn, not on self: with two chats running concurrently, a shared
+        # flag meant one turn's alert silenced the other's, or doubled it.
+        cost_alerted = {"fired": False}
         message_id = None
 
         if self.config.stream_enabled:
@@ -818,7 +858,7 @@ class Bridge:
                 self.api.send_prompt(session, text, files, delivery=delivery)
 
             message_id = self._pump(
-                chat_id, session, progress, message_id, submitted_at, watch
+                chat_id, session, progress, message_id, submitted_at, watch, cost_alerted
             )
         finally:
             if self.config.stream_enabled:
@@ -831,7 +871,7 @@ class Bridge:
 
         self._deliver_final(chat_id, message_id, final, markup, watch)
 
-        self._check_cost_alert(chat_id, progress)
+        self._check_cost_alert(chat_id, progress, cost_alerted)
 
     def _pump(
         self,
@@ -841,6 +881,7 @@ class Bridge:
         message_id: int | None,
         submitted_at: int,
         watch: bool,
+        cost_alerted: dict,
     ) -> int | None:
         """Poll until the turn ends, editing the live message as it goes.
 
@@ -897,15 +938,16 @@ class Bridge:
             progress.absorb_messages(messages, since=submitted_at)
             last_messages = messages
 
-            # The event stream is the fast path for text. If it is down or
-            # dropped events, fall back to what polling already has. Adopting
-            # the polled text only when it is *longer* keeps a healthy stream
-            # authoritative while still letting a turn whose stream died partway
-            # through be repaired - previously this ran once, so a single gap
-            # left the reply permanently short.
             polled = OpenCode.assistant_text(messages, submitted_at)
-            if polled and len(polled) > len(progress.text.strip()):
-                progress.text = polled
+            if polled:
+                # The event stream is the fast path for text. If it is down or
+                # dropped events, fall back to what polling already has.
+                # Adopting the polled text only when it is *longer* keeps a
+                # healthy stream authoritative while still letting a turn
+                # whose stream died partway through be repaired - and doing
+                # it under the progress lock stops the adoption from
+                # interleaving with a delta append mid-write.
+                progress.set_if_longer(polled)
 
             finished = any(
                 m.get("type") == "idle"
@@ -915,12 +957,12 @@ class Bridge:
 
             # Cost alerts fire while the turn is still spending, not only at
             # the end: by then the money is already gone.
-            if not self._cost_alerted and progress.cost:
+            if not cost_alerted["fired"] and progress.cost:
                 threshold = float(
                     self.state.pref(chat_id, "cost_alert", self.config.cost_alert) or 0
                 )
                 if threshold and progress.cost >= threshold:
-                    self._cost_alerted = True
+                    cost_alerted["fired"] = True
                     self.send(
                         chat_id,
                         f"Cost alert: ${progress.cost:.4f} so far, past your "
@@ -955,8 +997,8 @@ class Bridge:
 
         if last_messages:
             final_polled = OpenCode.assistant_text(last_messages, submitted_at)
-            if final_polled and len(final_polled) > len(progress.text.strip()):
-                progress.text = final_polled
+            if final_polled:
+                progress.set_if_longer(final_polled)
         return message_id
 
     def _deliver_final(
@@ -1013,13 +1055,16 @@ class Bridge:
             return text
         # Re-render rather than return the bare fallback, so notes like
         # "interrupted" and the duration footer survive.
-        progress.text = fallback.strip()
+        progress.set_if_longer(fallback.strip())
         return progress.final_text(self.config.max_output)
 
-    def _check_cost_alert(self, chat_id: str, progress: TurnProgress) -> None:
+    def _check_cost_alert(
+        self, chat_id: str, progress: TurnProgress, cost_alerted: dict
+    ) -> None:
         """Catch a turn that finished fast but still crossed the threshold."""
         threshold = float(self.state.pref(chat_id, "cost_alert", self.config.cost_alert) or 0)
-        if threshold and progress.cost >= threshold and not self._cost_alerted:
+        if threshold and progress.cost >= threshold and not cost_alerted["fired"]:
+            cost_alerted["fired"] = True
             self.send(
                 chat_id,
                 f"Cost alert: this session has reached ${progress.cost:.4f} "
@@ -1074,6 +1119,11 @@ class Bridge:
                 self._prune_seen(seen)
 
                 for chat_id in list(self.state.chats()):
+                    if chat_id not in self.config.allowed_chats:
+                        # Polling a removed chat's directory would surface its
+                        # pending requests - and possibly auto-answer them -
+                        # for a conversation that is no longer allowed.
+                        continue
                     directory = self.state.directory(chat_id)
                     try:
                         requests = self.api.permission_requests(directory=directory)
@@ -1140,6 +1190,10 @@ class Bridge:
             self.api.reply_permission(request.get("sessionID") or "", request_id, decision)
         except ApiError as exc:
             log.warning("Could not answer permission %s: %s", request_id, exc)
+            # Silence here reads as a successful approval: the user reacted,
+            # the card stayed, and the agent stayed blocked while we said
+            # nothing. The request is still pending, so say so.
+            self.send(chat_id, f"! Could not {decision} {request_id}: {exc.message}")
             return
 
         self._requests.pop(request_id, None)

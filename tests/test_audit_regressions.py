@@ -18,6 +18,7 @@ from bridgekit.api import ApiError
 from bridgekit.config import Config
 from bridgekit.keyboards import Router
 from bridgekit.policy import Policy
+from bridgekit.progress import TurnProgress
 from bridgekit.schedule import ScheduleStore
 from bridgekit.state import State
 from bridgekit.telegram import Telegram, split_message
@@ -461,3 +462,81 @@ def test_split_message_reserves_headroom_for_utf16():
     emoji = "\U0001f600" * 2100
     for chunk in split_message(emoji, 4096):
         assert len(chunk.encode("utf-16-le")) // 2 <= 4096
+
+
+def test_the_watcher_never_polls_a_chat_outside_the_allow_list(tmp_path):
+    """state.chats() kept entries for chats that are no longer allow-listed;
+    polling them surfaced their pending requests - and could auto-answer
+    them - for a conversation the bot is not supposed to serve anymore."""
+
+    class NoisyAPI(RecordingAPI):
+        def __init__(self):
+            self.polled = []
+
+        def permission_requests(self, directory=None):
+            self.polled.append(directory)
+            return []
+
+    bridge = build(tmp_path, FlakyTelegram(), NoisyAPI(), permission_poll=0.02)
+    ghost_dir = str(tmp_path / "ghost-projects")
+    bridge.state.set_session("999", "ses_ghost", directory=ghost_dir)
+
+    watcher = threading.Thread(target=bridge._permission_loop, daemon=True)
+    watcher.start()
+    time.sleep(0.25)
+    bridge.stop_event.set()
+    watcher.join(timeout=2)
+
+    assert bridge.api.polled, "allowed chat must still be watched"
+    assert all(directory != ghost_dir for directory in bridge.api.polled), (
+        "removed chats must not be watched"
+    )
+
+
+def test_a_failed_permission_reply_tells_the_user(tmp_path):
+    """An ApiError silently ate the approval: the user reacted, the card
+    stayed, the agent stayed blocked, and the chat said nothing."""
+
+    class DenyingAPI(RecordingAPI):
+        def reply_permission(self, *args, **kwargs):
+            raise ApiError(500, "server said no")
+
+    telegram = FlakyTelegram(fail_send=False, fail_edit=False)
+    bridge = build(tmp_path, telegram, DenyingAPI())
+    request = {"id": "perm_1", "sessionID": "ses_x", "action": "bash"}
+    bridge._requests["perm_1"] = request
+
+    bridge._reply_permission(CHAT, "perm_1", "once", request)
+
+    assert any("Could not" in text for text in telegram.sent), (
+        "the user must not see a reaction disappear in silence"
+    )
+    assert "perm_1" in bridge._requests, "a failed answer must stay known"
+
+
+def test_cost_alerts_are_per_turn_not_per_bridge(tmp_path):
+    """The shared bridge flag meant two concurrent turns suppressed each
+    other's alerts, or fired one twice."""
+
+    class PayingAPI(RecordingAPI):
+        def messages(self, session_id, limit=20, order="desc"):
+            return []
+
+    bridge = build(tmp_path, FlakyTelegram(fail_send=False), PayingAPI())
+    bridge.state.set_pref(CHAT, "cost_alert", 2.0)
+    progress = TurnProgress()
+    progress.cost = 5.0
+
+    first = {"fired": False}
+    bridge._check_cost_alert(CHAT, progress, first)
+    assert any("Cost alert" in text for text in bridge.telegram.sent)
+    bridge._check_cost_alert(CHAT, progress, first)
+    assert len([t for t in bridge.telegram.sent if "Cost alert" in t]) == 1, (
+        "one alert per turn, not per poll"
+    )
+
+    second_turn = {"fired": False}
+    bridge._check_cost_alert(CHAT, progress, second_turn)
+    assert len([t for t in bridge.telegram.sent if "Cost alert" in t]) == 2, (
+        "a different turn alerts independently"
+    )
