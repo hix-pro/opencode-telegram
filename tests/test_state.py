@@ -123,3 +123,56 @@ def test_writes_are_atomic(tmp_path):
     state.load()
     state.set_session("42", "ses_one")
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_non_dict_state_file_falls_back_to_fresh_state(tmp_path):
+    """A hand-edited file could hold an array or a bare string; that must
+    behave like a missing file, not crash every boot. The garbage is left
+    alone until the next real save replaces it atomically."""
+    path = tmp_path / ".state.json"
+    path.write_text(json.dumps([1, 2, 3]))
+    state = State(path, "/home/demo")
+    state.load()
+    assert state.session("99") is None  # nothing raised, nothing migrated
+    assert state.load_offset() == 0
+
+
+def test_a_policy_field_of_the_wrong_type_loads_as_empty(tmp_path):
+    path = tmp_path / ".state.json"
+    path.write_text(json.dumps({"version": 2, "policy": "garbage"}))
+    state = State(path, "/home/demo")
+    state.load()
+    assert state.load_policy() == {}
+    assert state.load_offset() == 0
+
+
+def test_chats_of_the_wrong_type_are_ignored(tmp_path):
+    path = tmp_path / ".state.json"
+    path.write_text(json.dumps({"version": 2, "chats": ["nope"], "policy": {}}))
+    state = State(path, "/home/demo")
+    state.load()
+    assert state.session("42") is None
+
+
+def test_garbage_chat_entries_are_skipped(tmp_path):
+    path = tmp_path / ".state.json"
+    path.write_text(json.dumps({"version": 2, "chats": {"42": "nope", "43": {}}}))
+    state = State(path, "/home/demo")
+    state.load()
+    assert state.directory("43") == "/home/demo"  # present + defaulted
+    assert state.chats() == ["43"]
+
+
+def test_stale_legacy_mirror_is_removed_when_sessions_end(tmp_path):
+    state = State(tmp_path / ".state.json", "/home/demo")
+    state.load()
+    state.set_session("42", "ses_one")
+    state.set_session("43", "ses_two")
+    mirror = tmp_path / ".session.json"
+    assert json.loads(mirror.read_text())["sessionID"] == "ses_two"
+
+    state.set_session("42", None)
+    assert mirror.exists()
+    state.set_session("43", None)
+    # A mirror pointing at a deleted session is worse than no mirror.
+    assert not mirror.exists()

@@ -179,3 +179,45 @@ def test_a_failed_download_leaves_no_partial_file(tmp_path):
     with pytest.raises(requests.exceptions.ConnectionError):
         client.download("f1", destination)
     assert not destination.exists(), "partial file must be cleaned up"
+
+
+def test_save_policy_preserves_the_telegram_offset(tmp_path):
+    """save_policy() used to replace the whole dict - and the offset lives there.
+    One /policy edit and a restart replayed every retained update as a
+    duplicate turn."""
+    path = tmp_path / ".state.json"
+    state = State(path, "/tmp")
+    state.load()
+    state.save_offset(4242)
+    state.save_policy({"mode": "all", "deny": [], "rules": {}})
+    assert state.load_offset() == 4242
+
+    reloaded = State(path, "/tmp")
+    reloaded.load()
+    assert reloaded.load_offset() == 4242, "a policy edit must not un-acknowledge updates"
+
+
+def test_an_explicit_offset_in_a_policy_snapshot_wins(tmp_path):
+    state = State(tmp_path / ".state.json", "/tmp")
+    state.load()
+    state.save_offset(10)
+    state.save_policy({"mode": "all", "deny": [], "rules": {}, "update_offset": 11})
+    assert state.load_offset() == 11
+
+
+def test_a_cleared_deny_list_stays_cleared_after_a_restart(tmp_path):
+    """The guard's default list must not resurrect entries the user cleared."""
+    path = tmp_path / ".state.json"
+    state = State(path, "/tmp")
+    state.load()
+    policy = Policy()
+    policy.deny = []  # a real setting, not bad data
+    policy._compile()
+    state.save_policy(policy.snapshot())
+
+    reloaded = State(path, "/tmp")
+    reloaded.load()
+    restored = Policy()
+    restored.restore(reloaded.load_policy())
+    assert restored.deny == []
+    assert restored.blocked_command("sudo apt update") is None

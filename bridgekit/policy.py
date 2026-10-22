@@ -173,7 +173,9 @@ class Policy:
         if mode in MODES:
             self.mode = mode
         deny = data.get("deny")
-        if isinstance(deny, list) and deny:
+        # An empty list is a real setting ("/policy deny clear"), not bad
+        # data: restore it, or cleared entries resurrect after a restart.
+        if isinstance(deny, list):
             self.deny = list(deny)
             self._compile()
         rules = data.get("rules")

@@ -46,7 +46,10 @@ class State:
         self.macros: dict[str, str] = {}
         self._dirty = False
         # Main thread, turn threads and the watcher all save concurrently.
-        self._lock = threading.Lock()
+        # RLock: mutators acquire the lock, mutate, then call save() which
+        # acquires it again - and the same thread runs the signal handlers
+        # that persist-on-shutdown while a save may already be in progress.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ load
 
@@ -65,40 +68,61 @@ class State:
         if not self.path.exists():
             return None
         try:
-            return json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text())
         except (json.JSONDecodeError, OSError):
             return None
+        # A hand-edited or corrupted file could hold any JSON value; treat
+        # non-objects as missing so load() falls back to legacy migration
+        # instead of raising on every subsequent boot.
+        return data if isinstance(data, dict) else None
 
     def load_schedules(self) -> list:
         return list(self.schedules)
 
     def save_schedules(self, items: list) -> None:
-        self.schedules = list(items)
-        self._dirty = True
-        self.save()
+        with self._lock:
+            self.schedules = list(items)
+            self._dirty = True
+            self.save()
 
     def load_offset(self) -> int:
         """Last acknowledged Telegram update, so a restart does not replay it."""
-        try:
-            return int(self.policy.get("update_offset") or 0)
-        except (TypeError, ValueError):
-            return 0
+        with self._lock:
+            try:
+                return int(self.policy.get("update_offset") or 0)
+            except (TypeError, ValueError):
+                return 0
 
     def save_offset(self, offset: int) -> None:
         """Recorded on every batch; writes are cheap and atomic."""
-        if offset == self.policy.get("update_offset"):
-            return
-        self.policy["update_offset"] = int(offset)
-        self._dirty = True
-        self.save()
+        with self._lock:
+            if offset == self.policy.get("update_offset"):
+                return
+            self.policy["update_offset"] = int(offset)
+            self._dirty = True
+            self.save()
 
     def load_policy(self) -> dict:
-        return dict(self.policy)
+        with self._lock:
+            return dict(self.policy)
 
     def save_policy(self, data: dict) -> None:
-        self.policy = data
-        self._dirty = True
-        self.save()
+        """Adopt a new policy snapshot.
+
+        The snapshot carries only mode/deny/rules, but this dict is also
+        where the Telegram update offset lives. A plain replace would set
+        the offset back to zero, so every retained update is replayed as a
+        duplicate turn after the next restart; carry the offset forward.
+        """
+        if isinstance(data, dict):
+            with self._lock:
+                updated = dict(data)
+                offset = self.policy.get("update_offset")
+                if offset is not None and "update_offset" not in updated:
+                    updated["update_offset"] = offset
+                self.policy = updated
+                self._dirty = True
+                self.save()
 
     def save_macros(self, macros: dict[str, str]) -> None:
         self.macros = dict(macros)
@@ -106,16 +130,23 @@ class State:
         self.save()
 
     def _load_v2(self, data: dict) -> None:
-        self.policy = data.get("policy") or {}
-        self.schedules = data.get("schedules") or []
-        self.macros = dict(data.get("macros") or {})
-        for chat_id, entry in (data.get("chats") or {}).items():
+        policy = data.get("policy")
+        self.policy = policy if isinstance(policy, dict) else {}
+        schedules = data.get("schedules")
+        self.schedules = schedules if isinstance(schedules, list) else []
+        macros = data.get("macros")
+        self.macros = dict(macros) if isinstance(macros, dict) else {}
+        chats = data.get("chats")
+        for chat_id, entry in (chats if isinstance(chats, dict) else {}).items():
+            if not isinstance(entry, dict):
+                continue
+            prefs = entry.get("prefs")
             self._chats[str(chat_id)] = ChatState(
                 session=entry.get("session"),
                 directory=entry.get("directory") or self.default_dir,
-                busy=entry.get("busy") or None,
+                busy=entry.get("busy") if isinstance(entry.get("busy"), dict) else None,
                 updated=entry.get("updated", 0.0),
-                prefs=entry.get("prefs") or {},
+                prefs=prefs if isinstance(prefs, dict) else {},
             )
 
     def _migrate_legacy(self) -> None:
@@ -124,20 +155,24 @@ class State:
         if not legacy.exists():
             return
         try:
-            session_id = json.loads(legacy.read_text()).get("sessionID")
+            data = json.loads(legacy.read_text())
         except (json.JSONDecodeError, OSError):
             return
+        if not isinstance(data, dict):
+            return
+        session_id = data.get("sessionID")
         if session_id:
             self._chats["*"] = ChatState(session=session_id, directory=self.default_dir)
             self._dirty = True
 
     def take_legacy(self) -> ChatState | None:
         """Remove and return the placeholder imported from .session.json."""
-        legacy = self._chats.pop("*", None)
-        if legacy:
-            self._dirty = True
-            self.save()
-        return legacy
+        with self._lock:
+            legacy = self._chats.pop("*", None)
+            if legacy:
+                self._dirty = True
+                self.save()
+            return legacy
 
     # ------------------------------------------------------------------ save
 
@@ -184,7 +219,9 @@ class State:
                 self._dirty = False
             except OSError:
                 # Losing persistence is survivable; losing the daemon is not.
-                log.debug("Could not persist state", exc_info=True)
+                # But quietly swallowing it at debug level hid the fact the
+                # disk was full, so escalate - this is worth a warning.
+                log.warning("Could not persist state", exc_info=True)
 
     def _harden_existing(self) -> None:
         """Tighten permissions on a state file written by an older version."""
@@ -196,27 +233,35 @@ class State:
 
     def _mirror_legacy(self, chats: dict) -> None:
         """Keep .session.json current for anything else that reads it."""
-        if not chats:
-            return
+        legacy = self.path.with_name(".session.json")
         with_session = {
             chat_id: chat for chat_id, chat in chats.items() if chat.get("session")
         }
         if not with_session:
+            # Every session is gone (e.g. /del on the last one): a mirror
+            # that still points at a deleted session is worse than none.
+            try:
+                legacy.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
             return
         newest = max(with_session.values(), key=lambda c: c.get("updated") or 0)
-        legacy = self.path.with_name(".session.json")
         try:
             legacy.write_text(json.dumps({"sessionID": newest.get("session")}))
+            legacy.chmod(0o600)  # same sensitivity as the sessions themselves
         except OSError:
             pass
 
     # ----------------------------------------------------------------- access
 
     def chat(self, chat_id: str) -> ChatState:
-        if chat_id not in self._chats:
-            self._chats[chat_id] = ChatState(directory=self.default_dir)
-            self._dirty = True
-        return self._chats[chat_id]
+        with self._lock:
+            if chat_id not in self._chats:
+                self._chats[chat_id] = ChatState(directory=self.default_dir)
+                self._dirty = True
+            return self._chats[chat_id]
 
     def session(self, chat_id: str) -> str | None:
         return self.chat(chat_id).session
@@ -227,18 +272,20 @@ class State:
     def set_session(
         self, chat_id: str, session_id: str | None, directory: str | None = None
     ) -> None:
-        chat = self.chat(chat_id)
-        chat.session = session_id
-        if directory:
-            chat.directory = directory
-        chat.updated = time.time()
-        self._dirty = True
-        self.save()
+        with self._lock:
+            chat = self.chat(chat_id)
+            chat.session = session_id
+            if directory:
+                chat.directory = directory
+            chat.updated = time.time()
+            self._dirty = True
+            self.save()
 
     def set_directory(self, chat_id: str, directory: str) -> None:
-        self.chat(chat_id).directory = directory
-        self._dirty = True
-        self.save()
+        with self._lock:
+            self.chat(chat_id).directory = directory
+            self._dirty = True
+            self.save()
 
     # ------------------------------------------------------------------ prefs
 
@@ -246,9 +293,10 @@ class State:
         return self.chat(chat_id).prefs.get(key, default)
 
     def set_pref(self, chat_id: str, key: str, value) -> None:
-        self.chat(chat_id).prefs[key] = value
-        self._dirty = True
-        self.save()
+        with self._lock:
+            self.chat(chat_id).prefs[key] = value
+            self._dirty = True
+            self.save()
 
     def prefs(self, chat_id: str) -> dict:
         return dict(self.chat(chat_id).prefs)
@@ -261,18 +309,20 @@ class State:
         This is deliberately persisted: a clean shutdown clears it, so anything
         found on disk at boot belongs to a turn that died with the process.
         """
-        chat = self.chat(chat_id)
-        chat.busy = {"session": session, "started": started}
-        chat.updated = time.time()
-        self._dirty = True
-        self.save()
-
-    def clear_busy(self, chat_id: str) -> None:
-        chat = self.chat(chat_id)
-        if chat.busy:
-            chat.busy = None
+        with self._lock:
+            chat = self.chat(chat_id)
+            chat.busy = {"session": session, "started": started}
+            chat.updated = time.time()
             self._dirty = True
             self.save()
+
+    def clear_busy(self, chat_id: str) -> None:
+        with self._lock:
+            chat = self.chat(chat_id)
+            if chat.busy:
+                chat.busy = None
+                self._dirty = True
+                self.save()
 
     def busy(self, chat_id: str) -> dict | None:
         """The in-flight turn, or None. Never persisted across a clean exit."""
@@ -280,8 +330,10 @@ class State:
 
     def orphaned_turns(self, older_than: float = 0.0) -> list[tuple[str, dict]]:
         """Turns that were running when the bridge died."""
+        with self._lock:
+            states = list(self._chats.items())
         found = []
-        for chat_id, chat in self._chats.items():
+        for chat_id, chat in states:
             if chat_id == "*" or not chat.busy:
                 continue
             if time.time() - (chat.busy.get("started") or 0) >= older_than:
@@ -290,10 +342,13 @@ class State:
 
     def owner_of(self, session_id: str) -> str | None:
         """Find which chat a session belongs to, for proactive notifications."""
-        for chat_id, chat in self._chats.items():
+        with self._lock:
+            states = list(self._chats.items())
+        for chat_id, chat in states:
             if chat.session == session_id and chat_id != "*":
                 return chat_id
         return None
 
     def chats(self) -> list[str]:
-        return [c for c in self._chats if c != "*"]
+        with self._lock:
+            return [c for c in self._chats if c != "*"]
