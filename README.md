@@ -268,6 +268,11 @@ Reacting **on a pending permission card** is scoped to that card: 👍 approves
 *just that request*, 👎/🛑 rejects it. On any other message the reactions keep
 their chat-wide meaning above.
 
+The mapping from a card to its request lives in memory, so after a bridge
+restart a reaction on a card delivered *earlier* degrades to the chat-wide
+meaning: the worst case is 👍 approving everything pending in the chat, never
+a card that no longer exists.
+
 ### Editing a sent message
 
 Edit a message you sent (fix a typo, refine the ask) and the new wording is
@@ -380,7 +385,7 @@ This bridge is a remote shell. Treat these as non-negotiable:
 ## Development
 
 ```bash
-python3 -m pytest tests -q        # the offline suite, ~550 tests
+python3 -m pytest tests -q        # the offline suite, 578 tests
 python3 -m pytest -m live          # 10 checks against a real server
 python3 -m ruff check .
 ```

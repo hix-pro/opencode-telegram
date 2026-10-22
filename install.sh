@@ -32,7 +32,7 @@ if [ ! -f "$HERE/.env" ]; then
         echo
         echo "  Before starting, fill these in:"
         echo "    TELEGRAM_BOT_TOKEN   from @BotFather"
-        echo "    TELEGRAM_ALLOWED_IDS your Telegram numeric id"
+        echo "    TELEGRAM_CHAT_ID     your Telegram numeric id"
         echo "    OPENCODE_PASSWORD    from ~/.config/opencode/service.json"
         echo
     else

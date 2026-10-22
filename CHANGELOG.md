@@ -1,5 +1,80 @@
 # Changelog
 
+## v2.2.1 — 2026-10-22
+
+The second audit round: five agents re-swept the tree for defects; every real
+one found is fixed here with a regression test, carrying the offline suite
+from 542 to 578 tests. No new features - only lies, leaks, and lost work.
+
+### Fixed
+
+- **Reactions never reached the bot.** `allowed_updates` was sent as repeated
+  JSON parameters; the bot-api server reads only the first pair, so
+  `message_reaction` was silently dropped and per-request reaction cards
+  answered *nothing* in production. It is now one JSON-serialized parameter,
+  pinned by a wire-format test against the exact bytes on the wire.
+- **State corruption could crash-loop or un-acknowledge updates.**
+  `save_policy` no longer wipes the update offset; wrong-type JSON blocks are
+  tolerated per-field instead of killing startup; the stale `.session.json`
+  mirror is gone and permissions to it tightened to `0600`; save failures
+  warn instead of raising from a background thread.
+- **The event stream could hand out mojibake.** SSE responses are decoded
+  UTF-8 explicitly, and a connection that closes cleanly in under 30 seconds
+  now counts as a drop (escalating backoff) instead of resetting the circuit
+  breaker every half a minute.
+- **Transient Telegram failures killed the bridge.** Polls on 429 (honoring
+  `retry_after`) or 5xx now wait and retry; only 401/403/409 remain fatal.
+  The offset is saved after every handled update, so a mid-batch crash no
+  longer replays already-acked updates as duplicate turns.
+- **Two dispatch bugs could drop or double messages.** The busy-check and
+  backlog append are one locked section (a check-then-act gap used to strand
+  a queued message forever), and the turn worker's finish path pops its
+  registry entry before draining the backlog under the same lock.
+- **Cost alerts were race-prone and permission answers died silently.** The
+  alert flag is per turn (two concurrent turns used to suppress or double
+  each other's alerts), and a failed permission answer now tells the user
+  instead of leaving the card unanswered; the watcher also skips chats that
+  have left the allow-list.
+- **Polled text could overwrite stream deltas.** Stream and poll writers
+  fought over the progress text; adoption is length-gated and locked at all
+  three repair sites now.
+- **The bot token leaked into logs and even into the chat.** Transport
+  errors from `download()` (the only whose error text is posted to the chat)
+  are re-raised as a user-safe TelegramError, and every catch-all Telegram
+  log site formats messages through the new `Telegram.redact()`.
+- **Commands behaved differently from how they read.** A macro could
+  register under `/start` or `/help_` and then never run; an args-only
+  macro (`{args}`) typed bare queued the command name as an agent prompt;
+  `/sh` never reported its exit code; editing a menu label queued the bare
+  label word as a prompt; `/alert` accepted negative thresholds; aborting an
+  idle chat armed the abort flag and killed the *next* turn - often a
+  scheduled job. All fixed, with the abort entry points unified.
+- **The session-switch button got typed-`/use` parity**: a miss reports
+  itself, the recent-list window matches the keyboard, and the target
+  directory is containment-checked before switching.
+- **The edit throttle now honors the window the server names.**
+  `effective_interval()` used to report a fixed "twice the usual" for any
+  429 while ignoring `retry_after`, and edits continued to POST inside the
+  window (re-arming it). Edits now hold off until the window closes, the
+  send path widens the same window, and the write-only `_penalty` field and
+  never-enforced `EDIT_BURST` constant are gone.
+- **A giant single line made `split_message` quadratic.** The hard split
+  re-encoded each candidate prefix per step; the cut walk now carries the
+  unit count, linear in the message size with identical chunk choices.
+- **Docs and metadata matched reality again.** `pyproject.toml` finally says
+  2.2.1, README counts the real suite, `install.sh` names
+  `TELEGRAM_CHAT_ID`, and the README documents that per-request reaction
+  cards degrade to chat-wide reactions after a restart.
+
+### Known limitations (unchanged)
+
+- STT concurrency uses `subprocess` with `shell=True` behind a fixed, quoted,
+  allow-list-checked command string - accepted deliberately, since removing
+  the shell would break the whisper wrapper's quoting.
+- OpenCode server limitations tracked upstream: the server reaps shell
+  commands after about a second, and its fs endpoints ignore the directory
+  parameter; live tests fail loudly if either behavior changes.
+
 ## v2.2.0 — 2026-10-22
 
 The UI round: everything acquired a button.
