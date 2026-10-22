@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.2.2 — 2026-10-22
+
+The ops round: two missing operational rolls. A hung bridge had nowhere to
+go - `Restart=always` only sees death, not deadlock - and the reaction-
+routing repair had no observable receipt. Plus the gates every future
+commit now walks through.
+
+### Added
+
+- **Heartbeat watchdog.** The bridge stamps `.bridge-heartbeat` before every
+  poll (success or failure; a Telegram outage keeps beating, so outages
+  never trigger restarts). `systemd/opencode-watchdog.timer` runs
+  `scripts/heartbeat_watchdog.py` every minute: a stale stamp under a unit
+  that systemd calls `active` - or an up-but-silent boot past the grace
+  period - gets one optional `WATCHDOG_ALERT_URL` webhook alert and a
+  restart. Stopped units stay stopped. `install.sh` installs and enables the
+  timer; the decision matrix is pinned by tests (5 new).
+- **Reaction receipts.** Every arriving `message_reaction` logs one
+  `Reaction update:` line; per-request reactions were once physically dead in
+  production, so arrival stays provable (`grep "Reaction update" bridge.log`).
+
+### Gates
+
+- **mypy.** The shipped surface (`bridge.py`, `bridgekit`, `scripts`) checks
+  clean: 0 issues in 17 files. Fixing the type lies made the runtime honest
+  too (`Context.policy`/`Context.schedules` are real default factories now;
+  async `/sh` raises a proper error instead of asserting under `-O`; a
+  permission card without a message id logs and degrades to chat-wide
+  instead of crashing the ask). Runs in the pre-commit hook, pipx-aware.
+- **bandit.** Scans shipped code only - a repo-wide run just reports the
+  tests' own asserts (proven: `targets=` in `[tool.bandit]` is ignored, so
+  `exclude_dirs` + explicit hook paths it is). The two accepted findings
+  stay suppressed inline (`# nosec` with justification comments): the
+  operator-configured STT `shell=True`, and the watchdog's fixed-argv
+  systemctl calls.
+- The pre-commit gate is now **ruff → mypy → bandit → pytest** (583 tests);
+  mypy/bandit self-skip with a note if absent.
+
+Offline suite: 583 tests green (was 578). Live: the same 10 checks.
+
 ## v2.2.1 — 2026-10-22
 
 The second audit round: five agents re-swept the tree for defects; every real

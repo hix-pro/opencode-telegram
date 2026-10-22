@@ -332,12 +332,51 @@ What happens when things break, because they will:
 | `/sh` runs a runaway command | It runs on its own thread with a 60s deadline; the chat stays responsive and `/abort` keeps working |
 | Disk fills with screenshots | Cached attachments are pruned hourly (`ATTACHMENT_MAX_AGE_HOURS`) |
 | SIGTERM | State is flushed and the process exits immediately rather than waiting to be killed |
+| Poll thread hangs while systemd still says "active" | The heartbeat watchdog (below) restarts the unit within a minute; a Telegram outage never trips it |
 
 `/doctor` checks all of this on demand.
 
 Scheduled work is not a separate path: a due prompt joins the same queue a
 message would, so it streams, can be `/abort`ed, and asks for permissions
 exactly like everything else.
+
+### The heartbeat watchdog
+
+`Restart=always` recovers a bridge that dies. It cannot see a bridge that
+*hangs* - no exception, no exit, just a poll thread wedged while systemd keeps
+saying the unit is `active`. The bridge stamps `.bridge-heartbeat` once per
+poll iteration (before the long poll, so a Telegram outage with failing calls
+still beats the heart), and a one-minute systemd user timer runs
+`scripts/heartbeat_watchdog.py`:
+
+- **stale stamp under an active unit** → an optional webhook alert, then a
+  restart. Set `WATCHDOG_ALERT_URL` in `.env` (the watchdog unit reads it)
+  to push the alert anywhere that takes a JSON `POST`; unset means restart
+  silently.
+- **a boot that never wrote one stamp** → restart too (a wedge before the
+  first poll); up to three minutes (the grace) a fresh boot warms quietly.
+- **unit not running** → nothing. A stopped bridge stays stopped by design;
+  the watchdog never resurrects it.
+
+Manual smoke test at any time:
+
+```bash
+python3 scripts/heartbeat_watchdog.py .bridge-heartbeat
+journalctl --user -u opencode-watchdog.service -n 5
+```
+
+Retire it with `systemctl --user disable --now opencode-watchdog.timer`
+(the repo units live in `systemd/`; `install.sh` sets the pair up).
+
+### Proof a reaction arrived
+
+Reaction routing was once physically dead in production, so every arriving
+`message_reaction` update logs one receipt line. Test it by reacting to a
+permission card, then:
+
+```bash
+grep "Reaction update" bridge.log
+```
 
 ## Live tests
 
@@ -385,7 +424,7 @@ This bridge is a remote shell. Treat these as non-negotiable:
 ## Development
 
 ```bash
-python3 -m pytest tests -q        # the offline suite, 578 tests
+python3 -m pytest tests -q        # the offline suite, 583 tests
 python3 -m pytest -m live          # 10 checks against a real server
 python3 -m ruff check .
 mypy                               # the type gate (pipx install mypy)
@@ -397,8 +436,9 @@ the offline suite. `mypy`/`bandit` skip themselves with a note if they are
 not installed, so the hook degrades gracefully rather than failing.
 
 Every commit is guarded: `core.hooksPath` points at the tracked `hooks/`
-directory, and the pre-commit hook runs ruff plus the offline suite. A red
-suite cannot land; bypass in emergencies with `git commit --no-verify`.
+directory, and the pre-commit hook runs ruff, mypy, bandit and the offline
+suite. A red gate cannot land; bypass in emergencies with
+`git commit --no-verify`.
 
 Layout:
 
