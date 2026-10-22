@@ -77,9 +77,11 @@ Send `/doctor` to your bot. It reports the server, session, policy, event
 stream, permission watcher and scheduler in one message.
 
 **No setup needed beyond that:** on start the bridge publishes its command list
-to Telegram, so every `/` you type autocompletes with a description, and the
-chat's Menu button opens as a command keyboard - the one discoverable control
-when you've forgotten what this bot can do.
+to Telegram, so every `/` you type autocompletes with a description, the
+chat's Menu button opens as a command keyboard, and a **persistent main menu**
+(Status · Sessions · New · Abort · Help) attaches to the bottom of the chat -
+tap a button, or type `/` for the full list. Telegram can always collapse the
+menu locally, so it never blocks typing.
 
 ### Day-to-day
 
@@ -146,6 +148,25 @@ Anything that is not a slash command is sent to the agent as a prompt.
 | `/stats` | Token and cost usage per session |
 | `/export` | Dump the session as JSON |
 | `/search <text>` | Find past sessions by title |
+
+`/sessions` comes with a **Switch button per session**, so juggling sessions is
+a tap instead of an id, and the switch is confirmed in the chat.
+
+### Macros
+
+Standing prompts get short slash commands. Record one, then run it by name:
+
+```
+/macro deploy deploy the app to staging
+/deploy                  → runs the recorded prompt
+/deploy canary           → appends the tail: "deploy the app to staging canary"
+/macro deploy {args} ship it        ← an explicit {args} slot works too
+/macro deploy            → deletes it (no body after the name)
+```
+
+Macros are global to the bot and saved in `.state.json`; they may not shadow a
+built-in command, and their bodies may not be slash commands. Autocomplete
+stays the curated command list — `/macro` lists what you have recorded.
 
 ### Model and agent
 
@@ -242,6 +263,10 @@ message in the chat:
 Only allow-listed people in allow-listed chats count, so a shared chat is not
 opened to whoever finds the bot. Only a newly *added* reaction acts: removing
 an emoji never repeats anything, and any other emoji is ignored.
+
+Reacting **on a pending permission card** is scoped to that card: 👍 approves
+*just that request*, 👎/🛑 rejects it. On any other message the reactions keep
+their chat-wide meaning above.
 
 ### Editing a sent message
 
@@ -355,10 +380,14 @@ This bridge is a remote shell. Treat these as non-negotiable:
 ## Development
 
 ```bash
-python3 -m pytest tests -q        # 451 tests, no network
+python3 -m pytest tests -q        # the offline suite, ~550 tests
 python3 -m pytest -m live          # 10 checks against a real server
 python3 -m ruff check .
 ```
+
+Every commit is guarded: `core.hooksPath` points at the tracked `hooks/`
+directory, and the pre-commit hook runs ruff plus the offline suite. A red
+suite cannot land; bypass in emergencies with `git commit --no-verify`.
 
 Layout:
 
