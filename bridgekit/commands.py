@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import localfs
+from . import keyboards, localfs
 from .api import (
     PERMISSION_ALWAYS,
     PERMISSION_ONCE,
@@ -70,6 +70,13 @@ class Context:
     # finish after the dispatcher has moved on. None keeps commands
     # synchronous.
     respond: Callable[[str], None] | None = None
+    # Inline keyboard a command wants attached to its reply; None means no
+    # markup. Lets /sessions offer its switch buttons without handlers
+    # knowing anything about sending.
+    markup: dict | None = None
+    # A command (a macro expansion) may rewrite the text that should reach
+    # the agent when it returns None; None keeps the original message.
+    rewrite: str | None = None
 
     # -------------------------------------------------------------- shortcuts
 
@@ -324,6 +331,9 @@ def cmd_sessions(ctx: Context) -> str:
     ]
     header = f"{len(sessions)} session(s) in {basename(ctx.directory)}"
     footer = "\nSwitch with /use <id>, #1, or a unique prefix."
+    # The tap-friendly route: one button per session resolves through the
+    # same use-callback the live message's Focus button uses.
+    ctx.markup = keyboards.session_list_markup(sessions, active_id=ctx.session)
     return header + "\n" + "\n".join(lines) + footer
 
 

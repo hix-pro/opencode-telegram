@@ -30,6 +30,7 @@ class FakeTelegram:
 
     def __init__(self, edit_succeeds: bool = True):
         self.sent: list[str] = []
+        self.markups: list = []
         self.edits: list[str] = []
         self.edit_succeeds = edit_succeeds
         self.edit_failures = 0
@@ -38,6 +39,7 @@ class FakeTelegram:
 
     def send(self, chat_id, text, reply_markup=None):
         self.sent.append(text)
+        self.markups.append(reply_markup)
         return 1
 
     def set_my_commands(self, commands):

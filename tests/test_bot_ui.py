@@ -126,7 +126,109 @@ def test_ignore_unknown_update_types(tmp_path):
     assert bridge.telegram.sent == []
 
 
-# ---------------------------------------------------------------- edits
+# ----------------------------------------------------------------- sessions
+
+
+def test_sessions_offers_a_switch_button_per_session(tmp_path):
+    """/sessions renders the tap-friendly route; no more typed ids."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+
+    ctx = bridge.context(CHAT)
+    reply = C.run(ctx, "/sessions")
+
+    assert "2 session(s)" in reply
+    rows = ctx.markup["inline_keyboard"]
+    assert [row[0]["text"] for row in rows] == ["First session", "Second session"]
+    assert [row[0]["callback_data"] for row in rows] == ["use:aaaaaaaa", "use:bbbbbbbb"]
+
+
+def test_a_pressed_session_button_switches_and_reports(tmp_path):
+    """The button route ends in the same switch a typed /use does."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+    bridge._register_callbacks()
+    bridge._handle_callback(
+        {
+            "id": "cb1",
+            "message": {"chat": {"id": int(CHAT)}, "message_id": 3},
+            "data": "use:bbbbbbbb",
+        }
+    )
+
+    assert bridge.state.session(CHAT) == "ses_bbbbbbbbbbbbbbbb"
+    assert any("Switched" in sent for sent in bridge.telegram.sent)
+
+
+def test_active_session_is_marked_in_the_button_list(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+    bridge.state.set_session(CHAT, "ses_bbbbbbbbbbbbbbbb")
+
+    ctx = bridge.context(CHAT)
+    C.run(ctx, "/sessions")
+
+    texts = [row[0]["text"] for row in ctx.markup["inline_keyboard"]]
+    assert texts == ["First session", "➜ Second session"]
+
+
+def test_sessions_with_no_matches_leaves_no_markup(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(sessions=[])
+
+    ctx = bridge.context(CHAT)
+    reply = C.run(ctx, "/sessions")
+
+    assert ctx.markup is None
+    assert "No sessions here yet" in reply
+
+
+def test_session_buttons_with_unlisted_titles(tmp_path):
+    """Untitled sessions still show a tappable row."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(
+        sessions=[{"id": "ses_cccccccccccccccc", "directory": "/home/demo", "title": ""}]
+    )
+
+    ctx = bridge.context(CHAT)
+    C.run(ctx, "/sessions")
+
+    assert [row[0]["text"] for row in ctx.markup["inline_keyboard"]] == ["Untitled"]
+
+
+def test_duplicate_suffixes_fall_back_to_full_ids(tmp_path):
+    """Two ids sharing their last 8 chars cannot share a callback."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(
+        sessions=[
+            {"id": "ses_11111111111zzzzzzzz", "title": "A"},
+            {"id": "ses_22222222222zzzzzzzz", "title": "B"},
+        ]
+    )
+
+    ctx = bridge.context(CHAT)
+    C.run(ctx, "/sessions")
+
+    rows = ctx.markup["inline_keyboard"]
+    datas = {row[0]["callback_data"] for row in rows}
+    assert datas == {"use:zzzzzzzz", "use:ses_22222222222zzzzzzzz"}
+    # The property that matters: no two buttons share a callback.
+    assert len(datas) == 2
+
+
+def test_sessions_reply_arrives_with_its_markup(tmp_path):
+    """The markup channel travels all the way through the update handler."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI()
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/sessions"}}
+    )
+
+    assert len(bridge.telegram.markups) == 1
+    assert bridge.telegram.markups[0] is not None
+
+
+# ------------------------------------------------------------------ edits
 
 
 def edited(text=None, user=CHAT, chat_id=CHAT, is_bot=False):

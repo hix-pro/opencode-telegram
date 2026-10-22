@@ -280,11 +280,22 @@ class Bridge:
                 self.state.set_session(
                     chat_id, session["id"], directory=session.get("directory")
                 )
+                # Never a silent switch: the user tapped something, and
+                # Telegram shows nothing on its own.
+                title = (session.get("title") or "").strip()[:40]
+                suffix = session["id"][-8:]
+                self.send(
+                    chat_id,
+                    f'Switched to "{title}" ({suffix}).'
+                    if title
+                    else f"Switched to session {suffix}.",
+                )
 
     def _run_command_text(self, chat_id: str, text: str) -> None:
         """Run a command on behalf of a button press."""
         try:
-            reply = commands.run(self.context(chat_id), text)
+            ctx = self.context(chat_id)
+            reply = commands.run(ctx, text)
         except commands.CommandError as exc:
             self.send(chat_id, f"! {exc}")
             return
@@ -296,7 +307,7 @@ class Bridge:
             self.send(chat_id, "! Internal error; check the bridge log.")
             return
         if reply:
-            self.send(chat_id, reply)
+            self.send(chat_id, reply, ctx.markup)
 
     def _publish_command_list(self) -> None:
         """Publish commands and the menu button so the UI knows what exists.
@@ -463,7 +474,8 @@ class Bridge:
             self.abort_flag(chat_id).clear()
 
         try:
-            reply = commands.run(self.context(chat_id), text)
+            ctx = self.context(chat_id)
+            reply = commands.run(ctx, text)
         except commands.CommandError as exc:
             self.send(chat_id, f"! {exc}")
             return
@@ -479,8 +491,10 @@ class Bridge:
         if reply is None:
             self.work.put((chat_id, text, None))
             return
-        markup = keyboards.help_buttons() if text.startswith("/help") else None
-        self.send(chat_id, reply, markup)
+        if text.startswith("/help"):
+            self.send(chat_id, reply, keyboards.help_buttons())
+            return
+        self.send(chat_id, reply, ctx.markup)
 
     def _handle_callback(self, query: dict) -> None:
         chat_id = str((query.get("message") or {}).get("chat", {}).get("id", ""))

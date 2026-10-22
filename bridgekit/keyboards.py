@@ -14,6 +14,10 @@ from collections.abc import Callable
 MAX_CALLBACK = 64
 SEP = ":"
 
+# A switch button per session beats any number of typed /use arguments, but
+# the keyboard still has to fit a phone screen.
+MAX_SESSION_BUTTONS = 12
+
 
 def keyboard(rows: list[list[tuple[str, str]]]) -> dict:
     """Build a reply markup from rows of (label, callback_data) pairs."""
@@ -61,6 +65,29 @@ class Router:
 
 
 # --- Built-in keyboards -------------------------------------------------------
+
+
+def session_list_markup(sessions: list, active_id: str | None = None) -> dict | None:
+    """A switch button per recent session.
+
+    Buttons carry the id suffix, which the ``use`` callback resolves.
+    Suffixes collide rarely, and Telegram's 64-byte callback budget allows
+    the full id when they would.
+    """
+    rows: list[list[tuple[str, str]]] = []
+    used: set[str] = set()
+    for session in sessions[:MAX_SESSION_BUTTONS]:
+        session_id = session.get("id") or ""
+        if not session_id:
+            continue
+        suffix = session_id[-8:]
+        if suffix in used:
+            suffix = session_id
+        used.add(suffix)
+        title = (session.get("title") or "").strip()[:40] or "Untitled"
+        mark = "➜ " if session_id == active_id else ""
+        rows.append([(f"{mark}{title}", encode("use", suffix))])
+    return keyboard(rows) if rows else None
 
 
 def permission_buttons(request_id: str) -> dict:
