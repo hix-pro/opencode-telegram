@@ -7,6 +7,7 @@ canned payloads so command behaviour can be asserted in isolation.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -27,13 +28,13 @@ class FakeAPI:
             {
                 "id": "ses_aaaaaaaaaaaaaaaa",
                 "title": "First session",
-                "directory": "/home/demo",
+                "directory": tempfile.gettempdir(),
                 "time": {"created": 1_700_000_000_000, "updated": 1_700_000_100_000},
             },
             {
                 "id": "ses_bbbbbbbbbbbbbbbb",
                 "title": "Second session",
-                "directory": "/home/demo",
+                "directory": tempfile.gettempdir(),
                 "time": {"created": 1_700_000_200_000, "updated": 1_700_000_300_000},
             },
         ]
@@ -169,7 +170,7 @@ class FakeAPI:
         return []
 
     def projects(self):
-        return [{"id": "proj_1", "worktree": "/home/demo"}]
+        return [{"id": "proj_1", "worktree": tempfile.gettempdir()}]
 
     def read_file(self, directory, path):
         self._record("read_file", directory, path)

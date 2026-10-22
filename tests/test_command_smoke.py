@@ -7,6 +7,8 @@ nobody has executed is a command that works only in theory.
 
 from __future__ import annotations
 
+import tempfile
+
 import pytest
 
 from bridgekit.api import ApiError
@@ -83,7 +85,7 @@ def test_stats_survives_a_partial_payload(ready, ctx):
 
 
 def test_projects_lists_them(ready, ctx):
-    assert "/home/demo" in run(ready, "/projects")
+    assert tempfile.gettempdir() in run(ready, "/projects")
 
 
 def test_diff_shows_output(ready, ctx):

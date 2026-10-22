@@ -6,6 +6,7 @@
 # Runtime state and logs
 .state.json
 .bridge-heartbeat
+backup-essential.sh
 .session.json
 bridge.log
 bridge.log.*

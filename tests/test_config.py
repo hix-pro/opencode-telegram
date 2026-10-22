@@ -15,7 +15,6 @@ def base_env(**overrides):
         "TELEGRAM_BOT_TOKEN": "token",
         "TELEGRAM_CHAT_ID": "42, 43",
         "OPENCODE_PASSWORD": "secret",
-        "PROJECT_DIR": "/home/demo",
     }
     env.update(overrides)
     return env
@@ -41,8 +40,8 @@ def test_blank_allow_list_is_rejected():
         Config.from_env(base_env(TELEGRAM_CHAT_ID=" , "))
 
 
-def test_allow_list_is_split_and_trimmed():
-    config = Config.from_env(base_env(TELEGRAM_CHAT_ID=" 42 , 43 "))
+def test_allow_list_is_split_and_trimmed(tmp_path):
+    config = Config.from_env(base_env(TELEGRAM_CHAT_ID=" 42 , 43 ", PROJECT_DIR=str(tmp_path)))
     assert config.allowed_chats == frozenset({"42", "43"})
 
 
@@ -58,8 +57,10 @@ def test_password_falls_back_to_service_json(tmp_path, monkeypatch):
     assert config.password == "from-file"
 
 
-def test_url_defaults_and_trailing_slash():
-    config = Config.from_env(base_env(OPENCODE_URL="http://host:1234/"))
+def test_url_defaults_and_trailing_slash(tmp_path):
+    config = Config.from_env(
+        base_env(OPENCODE_URL="http://host:1234/", PROJECT_DIR=str(tmp_path))
+    )
     assert config.opencode_url == "http://host:1234"
 
 
@@ -139,18 +140,18 @@ def test_a_fully_commented_value_is_ignored():
         )
 
 
-def test_allowed_roots_tolerate_spaces_after_commas():
+def test_allowed_roots_tolerate_spaces_after_commas(tmp_path):
     config = Config.from_env(
         {
             "TELEGRAM_BOT_TOKEN": "t",
             "TELEGRAM_CHAT_ID": "42",
             "OPENCODE_URL": "http://x",
             "OPENCODE_PASSWORD": "p",
-            "PROJECT_DIR": "/home/demo",
-            "ALLOWED_ROOTS": "/home/demo, /home/demo/Desktop",
+            "PROJECT_DIR": str(tmp_path),
+            "ALLOWED_ROOTS": f"{tmp_path}, {tmp_path / 'Desktop'}",
         }
     )
-    assert Path("/home/demo") in config.allowed_roots
-    assert Path("/home/demo/Desktop") in config.allowed_roots
+    assert Path(tmp_path) in config.allowed_roots
+    assert Path(tmp_path / "Desktop") in config.allowed_roots
     # A leading space used to resolve as a distinct (nonexistent) root.
     assert not any(str(root).lstrip() != str(root) for root in config.allowed_roots)

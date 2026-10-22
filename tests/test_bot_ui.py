@@ -9,6 +9,7 @@ and an emoji reaction is the fastest route to approve or abort.
 from __future__ import annotations
 
 import json
+import tempfile
 
 import pytest
 from conftest import FakeAPI
@@ -270,7 +271,9 @@ def test_session_buttons_with_unlisted_titles(tmp_path):
     """Untitled sessions still show a tappable row."""
     bridge = build_bridge(tmp_path, FakeTelegram())
     bridge.api = FakeAPI(
-        sessions=[{"id": "ses_cccccccccccccccc", "directory": "/home/demo", "title": ""}]
+        sessions=[
+            {"id": "ses_cccccccccccccccc", "directory": tempfile.gettempdir(), "title": ""}
+        ]
     )
 
     ctx = bridge.context(CHAT)

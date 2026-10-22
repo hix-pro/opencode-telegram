@@ -84,11 +84,29 @@ def test_example_values_are_accepted():
         Config.from_env({**base, name: value})
 
 
-def test_service_unit_exists_in_the_repo():
-    unit = ROOT / "systemd" / "opencode-telegram-bridge.service"
-    assert unit.exists(), "the service definition must be recoverable from the repo"
-    text = unit.read_text()
+def test_service_units_are_recoverable_from_the_repo():
+    """The units are rendered from templates at install time, so the repo must
+    carry the template pair plus the timer - otherwise a fresh checkout
+    cannot reproduce the deployment."""
+    systemd = ROOT / "systemd"
+    for name in (
+        "opencode-telegram-bridge.service.in",
+        "opencode-watchdog.service.in",
+        "opencode-watchdog.timer",
+    ):
+        unit = systemd / name
+        assert unit.exists(), f"{name} must be recoverable from the repo"
+
+    text = (systemd / "opencode-telegram-bridge.service.in").read_text()
     assert "ExecStart=" in text and "EnvironmentFile=" in text
+    # Soft references only: a foreign machine without opencode-server.service
+    # must still be able to boot the bridge.
+    assert "Wants=" in text and "Requires=" not in text
+    # install.sh renders both @REPO@ and @PYTHON@; a stale placeholder must
+    # never leak into an installed unit.
+    assert "@REPO@" in text and "@PYTHON@" in text
+    watchdog = (systemd / "opencode-watchdog.service.in").read_text()
+    assert "@REPO@" in watchdog and "heartbeat_watchdog" in watchdog
 
 
 def test_install_scripts_exist_and_are_executable():
