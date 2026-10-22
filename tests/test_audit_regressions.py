@@ -147,6 +147,7 @@ def build(tmp_path, telegram, api, **overrides):
     b._workers = {}
     b.schedules = ScheduleStore()
     b._requests = {}
+    b._perm_cards = {}
     b.health = B.Health(streaming=False)
     b._lock = threading.Lock()
     b._register_callbacks()

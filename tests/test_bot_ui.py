@@ -34,6 +34,67 @@ def reaction(chat_id=CHAT, user=CHAT, emoji="👍", message_id=5, new=None):
     }
 
 
+# --------------------------------------------------- per-request reactions
+
+PERM_1 = {"id": "perm_1", "sessionID": "ses_x", "action": "bash", "resources": ["ls"]}
+PERM_2 = {"id": "perm_2", "sessionID": "ses_x", "action": "edit", "resources": []}
+
+
+def test_a_permission_card_is_remembered_by_message_id(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+
+    assert bridge._notify_permission(CHAT, "perm_9", {"action": "bash", "resources": ["ls"]})
+    assert bridge._perm_cards == {(CHAT, 1): "perm_9"}
+
+
+def test_reacting_on_a_card_approves_just_that_request(tmp_path):
+    """Scope, not spray: the other pending request stays untouched."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(permissions=[dict(PERM_1), dict(PERM_2)])
+    bridge._requests = {"perm_1": dict(PERM_1)}
+    bridge._perm_cards[(CHAT, 5)] = "perm_1"
+
+    bridge._handle_update(reaction(message_id=5))
+
+    assert bridge.api.permissions == [PERM_2], "only the card's request was answered"
+    assert (CHAT, 5) not in bridge._perm_cards, "answered cards are forgotten"
+
+
+def test_stop_reaction_on_a_card_rejects_it(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(permissions=[dict(PERM_1)])
+    bridge._requests = {"perm_1": dict(PERM_1)}
+    bridge._perm_cards[(CHAT, 5)] = "perm_1"
+
+    bridge._handle_update(reaction(message_id=5, emoji="👎"))
+
+    decisions = [c[1][2] for c in bridge.api.calls if c[0] == "reply_permission"]
+    assert decisions == ["reject"]
+    assert bridge._perm_cards == {}
+
+
+def test_a_reaction_off_the_card_still_means_yes_to_all(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.api = FakeAPI(permissions=[dict(PERM_1), dict(PERM_2)])
+    bridge._perm_cards[(CHAT, 5)] = "perm_1"
+
+    bridge._handle_update(reaction(message_id=99))
+
+    assert bridge.api.permissions == [], "both requests approved"
+    assert bridge._perm_cards == {}, "nothing is pending, so no card remains"
+
+
+def test_card_mappings_resolve_with_their_requests(tmp_path):
+    """A request answered elsewhere must not keep a mapped card."""
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._requests = {"perm_9": {}}
+    bridge._perm_cards = {(CHAT, 1): "perm_9", (CHAT, 2): "ghost"}
+
+    bridge._prune_seen([])
+
+    assert bridge._perm_cards == {(CHAT, 1): "perm_9"}
+
+
 def test_thumbs_up_approves_every_pending_request(tmp_path):
     """The fastest 'yes to all' a phone can give."""
     bridge = build_bridge(tmp_path, FakeTelegram())

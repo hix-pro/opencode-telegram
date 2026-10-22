@@ -121,6 +121,10 @@ class Bridge:
         # request_id -> request, filled by the watcher so button presses can be
         # answered without an API round trip.
         self._requests: dict[str, dict] = {}
+        # Reaction targets: (chat, message_id) of a permission card that is
+        # still pending, so a react-on-the-card is scoped to that one
+        # request instead of the whole chat.
+        self._perm_cards: dict[tuple[str, int], str] = {}
         # Messages that arrived while a chat was mid-turn.
         self._backlog: dict[str, list] = {}
         # Set when polling cannot continue at all.
@@ -572,9 +576,25 @@ class Bridge:
         emojis = [str(r.get("emoji") or "") for r in reaction.get("new_reaction") or []]
         if not emojis:
             return
-        if any(emoji in APPROVE_REACTIONS for emoji in emojis):
+        approve = any(emoji in APPROVE_REACTIONS for emoji in emojis)
+        stop = any(emoji in STOP_REACTIONS for emoji in emojis)
+        if not (approve or stop):
+            return
+
+        # Reacting on a pending permission card is scoped to that one
+        # request: approve it, or reject it, wherever it came from.
+        try:
+            message_id = int(reaction.get("message_id") or 0)
+        except (TypeError, ValueError):
+            return
+        card_request = self._perm_cards.get((chat_id, message_id))
+        if card_request:
+            self._reply_permission(chat_id, card_request, "once" if approve else "reject")
+            return
+
+        if approve:
             self._approve_all_pending(chat_id)
-        if any(emoji in STOP_REACTIONS for emoji in emojis):
+        if stop:
             self._stop_turn(chat_id)
 
     def _approve_all_pending(self, chat_id: str) -> None:
@@ -1093,6 +1113,12 @@ class Bridge:
         if len(self._requests) > MAX_CACHED_REQUESTS:
             for request_id in list(self._requests)[: len(self._requests) // 2]:
                 self._requests.pop(request_id, None)
+        # Card mappings whose request resolved elsewhere (an auto-decision,
+        # a server-side answer) must not keep a dead id on a live message;
+        # the dict is small, so reconciling it here is cheap.
+        for key in list(self._perm_cards):
+            if self._perm_cards[key] not in self._requests:
+                self._perm_cards.pop(key, None)
 
     def _reply_permission(
         self,
@@ -1114,6 +1140,8 @@ class Bridge:
             return
 
         self._requests.pop(request_id, None)
+        for key in [k for k, v in self._perm_cards.items() if v == request_id]:
+            self._perm_cards.pop(key, None)
         verb = {"once": "approved", "always": "always allowed", "reject": "rejected"}[decision]
         auto = " (auto)" if request.get("_auto") else ""
         self.send(chat_id, f"Permission {verb}{auto}: {request.get('action', '?')}")
@@ -1141,6 +1169,7 @@ class Bridge:
         except (TelegramError, OSError) as exc:
             log.warning("Could not ask about permission %s: %s", request_id, exc)
             return False
+        self._perm_cards[(chat_id, int(message_id))] = request_id
         log.info("Asked chat %s about permission %s (%s)", chat_id, request_id, message_id)
         return True
 

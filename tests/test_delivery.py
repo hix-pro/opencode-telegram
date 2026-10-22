@@ -144,6 +144,7 @@ def build_bridge(tmp_path, telegram):
     instance.stop_event = threading.Event()
     instance.aborts = {}
     instance._requests = {}
+    instance._perm_cards = {}
     instance.health = B.Health(streaming=False)
     instance._lock = threading.Lock()
     instance.schedules = ScheduleStore()

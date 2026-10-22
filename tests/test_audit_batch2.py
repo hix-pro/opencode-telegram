@@ -85,6 +85,7 @@ def test_health_reports_a_real_uptime(tmp_path):
         "E", (), {"connected": True, "frames": 5, "reconnects": 0, "last_error": ""}
     )()
     bridge._requests = {}
+    bridge._perm_cards = {}
     bridge._backlog = {}
     bridge.aborts = {}
     bridge._workers = {}
@@ -221,6 +222,7 @@ def test_queued_messages_are_held_not_dropped(tmp_path):
     b.aborts = {}
     b._workers = {}
     b._requests = {}
+    b._perm_cards = {}
     b._backlog = {}
     b.health = B.Health()
     b._lock = threading.Lock()
@@ -275,6 +277,7 @@ def test_watcher_survives_an_arbitrary_error(tmp_path):
     b.stop_event = threading.Event()
     b.health = B.Health()
     b._requests = {}
+    b._perm_cards = {}
 
     thread = threading.Thread(target=b._permission_loop, daemon=True)
     thread.start()
@@ -340,6 +343,7 @@ def test_failed_notification_is_retried_next_poll(tmp_path):
     b.stop_event = threading.Event()
     b.health = B.Health()
     b._requests = {}
+    b._perm_cards = {}
 
     thread = threading.Thread(target=b._permission_loop, daemon=True)
     thread.start()

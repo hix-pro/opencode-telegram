@@ -141,6 +141,7 @@ def bridge(tmp_path):
     instance.aborts = {}
     instance._workers = {}
     instance._requests = {}
+    instance._perm_cards = {}
     instance._backlog = {}
     instance.schedules = ScheduleStore()
     instance.health = B.Health(streaming=False)

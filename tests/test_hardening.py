@@ -124,6 +124,7 @@ def build_bridge(tmp_path, api, **overrides):
     instance.aborts = {}
     instance._workers = {}
     instance._requests = {}
+    instance._perm_cards = {}
     instance._backlog = {}
     instance.health = B.Health(streaming=False)
     instance._lock = threading.Lock()
