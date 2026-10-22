@@ -41,6 +41,9 @@ class State:
         # Global, not per chat: the approval mode and the guard's deny-list.
         self.policy: dict = {}
         self.schedules: list = []
+        # Standing prompts, global to the bot; /macro records them and
+        # /<name> runs one.
+        self.macros: dict[str, str] = {}
         self._dirty = False
         # Main thread, turn threads and the watcher all save concurrently.
         self._lock = threading.Lock()
@@ -97,9 +100,15 @@ class State:
         self._dirty = True
         self.save()
 
+    def save_macros(self, macros: dict[str, str]) -> None:
+        self.macros = dict(macros)
+        self._dirty = True
+        self.save()
+
     def _load_v2(self, data: dict) -> None:
         self.policy = data.get("policy") or {}
         self.schedules = data.get("schedules") or []
+        self.macros = dict(data.get("macros") or {})
         for chat_id, entry in (data.get("chats") or {}).items():
             self._chats[str(chat_id)] = ChatState(
                 session=entry.get("session"),
@@ -146,6 +155,7 @@ class State:
                 # in the chats map.
                 "policy": self.policy,
                 "schedules": self.schedules,
+                "macros": self.macros,
                 # Persist chats even without a session: /dir, /delivery and
                 # /alert all take effect before the first turn.
                 "chats": {
@@ -189,9 +199,7 @@ class State:
         if not chats:
             return
         with_session = {
-            chat_id: chat
-            for chat_id, chat in chats.items()
-            if chat.get("session")
+            chat_id: chat for chat_id, chat in chats.items() if chat.get("session")
         }
         if not with_session:
             return

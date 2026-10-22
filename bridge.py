@@ -383,6 +383,7 @@ class Bridge:
             health=self.health_report(),
             on_permission_answered=self._requests.pop,
             schedules=self.schedules,
+            macros=dict(self.state.macros),
             respond=lambda text: self.send(chat_id, text),
         )
 
@@ -513,7 +514,9 @@ class Bridge:
             return
 
         if reply is None:
-            self.work.put((chat_id, text, None))
+            # A macro rewrote the text into the standing prompt it stands
+            # for; otherwise the raw text is the prompt.
+            self.work.put((chat_id, ctx.rewrite or text, None))
             return
         if text.startswith("/help"):
             self.send(chat_id, reply, keyboards.help_buttons())

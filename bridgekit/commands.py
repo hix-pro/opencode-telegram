@@ -11,6 +11,7 @@ Adding a command is one ``@command(...)`` decorated function.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -66,6 +67,8 @@ class Context:
     # it, so a stale button cannot still resolve.
     on_permission_answered: Callable[[str], None] = lambda request_id: None
     schedules: ScheduleStore | None = None
+    # Standing prompts recorded with /macro, keyed by the name they run as.
+    macros: dict[str, str] = field(default_factory=dict)
     # Out-of-band delivery for this chat, used by long-running commands that
     # finish after the dispatcher has moved on. None keeps commands
     # synchronous.
@@ -176,6 +179,9 @@ PRIMARY_COMMANDS = frozenset(
         "yes",
     }
 )
+
+# A macro name: letters/digits/underscore, starting with a letter.
+MACRO_NAME = re.compile(r"[a-z][a-z0-9_]{0,23}")
 
 # Longest a /sh command may run before the bridge stops waiting.
 SHELL_TIMEOUT = 60
@@ -355,6 +361,49 @@ def cmd_use(ctx: Context) -> str:
     ctx.state.set_session(ctx.chat_id, session["id"], directory=directory)
     title = session.get("title") or "untitled"
     return f"Now in {session['id']}\n{title}\nDir: {directory}"
+
+
+@command(
+    "macro",
+    "Standing prompts: /macro name prompt - then run as /name",
+    usage="/macro [name [prompt]]",
+    group="Help",
+)
+def cmd_macro(ctx: Context) -> str:
+    trimmed = (ctx.args or "").strip()
+    if not trimmed:
+        macros = ctx.macros
+        if not macros:
+            return (
+                "No macros yet. Record one with:\n"
+                "/macro deploy deploy the app to staging\n"
+                "…then just type /deploy to run it."
+            )
+        lines = [f"/{name} - {template[:80]}" for name, template in sorted(macros.items())]
+        return "Macros - run by typing /<name>:\n" + "\n".join(lines)
+
+    name, _, template = trimmed.partition(" ")
+    name = name.lower().lstrip("/")
+    template = template.strip()
+    if not MACRO_NAME.fullmatch(name):
+        raise CommandError(
+            "Macro names use letters, digits and underscores, starting with a letter."
+        )
+    if name in REGISTRY:
+        raise CommandError(f"/{name} is a built-in command; a macro cannot shadow it.")
+    if not template:
+        if name in ctx.macros:
+            del ctx.macros[name]
+            ctx.state.save_macros(ctx.macros)
+            return f"Macro /{name} deleted."
+        raise CommandError(f"No macro /{name}. List what exists with /macro.")
+    if template.startswith("/"):
+        raise CommandError(
+            "A macro body is a prompt for the agent; slash commands do not fit."
+        )
+    ctx.macros[name] = template
+    ctx.state.save_macros(ctx.macros)
+    return f"Macro /{name} recorded - run it by typing /{name}."
 
 
 @command("info", "Details for the active session", group="Session")
@@ -1572,6 +1621,20 @@ def run(ctx: Context, text: str) -> str | None:
 
     cmd = REGISTRY.get(name)
     if not cmd:
+        template = ctx.macros.get(name)
+        if template:
+            # Expand the standing prompt: an explicit {args} slot is filled;
+            # otherwise the tail trails the template. A second line flows
+            # through either way.
+            tail = args
+            if rest:
+                tail = f"{tail}\n{rest}" if tail else rest
+            if "{args}" in template:
+                expanded = template.replace("{args}", tail)
+            else:
+                expanded = f"{template} {tail}" if tail else template
+            ctx.rewrite = expanded.strip()
+            return None
         suggestion = _suggest(name)
         hint = f" Did you mean /{suggestion}?" if suggestion else ""
         raise CommandError(f"Unknown command /{name}.{hint} Send /help for the list.")

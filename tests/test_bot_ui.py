@@ -8,6 +8,7 @@ and an emoji reaction is the fastest route to approve or abort.
 
 from __future__ import annotations
 
+import pytest
 from conftest import FakeAPI
 from test_delivery import CHAT, FakeTelegram, build_bridge
 
@@ -494,3 +495,122 @@ def test_get_updates_asks_for_reactions_with_the_batch():
     assert "message_reaction" in params["allowed_updates"]
     assert params["allowed_updates"] == tuple(ALLOWED_UPDATES)
     assert params["offset"] == 7
+
+
+# ------------------------------------------------------------------ macros
+
+
+def test_macro_set_persists_to_state(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    ctx = bridge.context(CHAT)
+
+    reply = C.run(ctx, "/macro deploy deploy the app to staging")
+
+    assert "recorded" in reply
+    assert ctx.macros["deploy"] == "deploy the app to staging"
+    assert bridge.state.macros["deploy"] == "deploy the app to staging"
+
+
+def test_macro_list_shows_what_exists(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    ctx = bridge.context(CHAT)
+    C.run(ctx, "/macro deploy ship it")
+
+    reply = C.run(ctx, "/macro")
+
+    assert "/deploy" in reply and "ship it" in reply
+
+
+def test_macro_list_with_none_recorded(tmp_path):
+    ctx = build_bridge(tmp_path, FakeTelegram()).context(CHAT)
+    assert "No macros yet" in C.run(ctx, "/macro")
+
+
+def test_macro_delete(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    ctx = bridge.context(CHAT)
+    C.run(ctx, "/macro deploy ship it")
+
+    reply = C.run(ctx, "/macro deploy ")
+
+    assert "deleted" in reply
+    assert "deploy" not in bridge.state.macros
+
+
+def test_macro_cannot_shadow_a_builtin(tmp_path):
+    ctx = build_bridge(tmp_path, FakeTelegram()).context(CHAT)
+    with pytest.raises(C.CommandError):
+        C.run(ctx, "/macro help do things")
+
+
+def test_macro_body_cannot_be_a_slash_command(tmp_path):
+    ctx = build_bridge(tmp_path, FakeTelegram()).context(CHAT)
+    with pytest.raises(C.CommandError):
+        C.run(ctx, "/macro deploy /revert")
+
+
+def test_macro_name_must_be_a_name(tmp_path):
+    ctx = build_bridge(tmp_path, FakeTelegram()).context(CHAT)
+    with pytest.raises(C.CommandError):
+        C.run(ctx, "/macro 9bad text")
+
+
+def test_typing_a_macro_sends_the_expanded_prompt(tmp_path):
+    """The macro path ends in the work queue, like any prompt."""
+    import json
+
+    from bridgekit.state import VERSION
+
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    (tmp_path / ".state.json").write_text(
+        json.dumps(
+            {
+                "version": VERSION,
+                "policy": {},
+                "schedules": [],
+                "macros": {"deploy": "Ship it {args}"},
+                "chats": {},
+            }
+        )
+    )
+    bridge.state.load()
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/deploy staging"}}
+    )
+
+    assert bridge.work.get(timeout=1) == (CHAT, "Ship it staging", None)
+    assert "Unknown command" not in " ".join(bridge.telegram.sent)
+
+
+def test_macro_without_an_args_slot_appends_the_tail(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.state.save_macros({"deploy": "Ship it"})
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/deploy to prod now"}}
+    )
+
+    assert bridge.work.get(timeout=1) == (CHAT, "Ship it to prod now", None)
+
+
+def test_a_bare_macro_runs_this_standing_prompt(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge.state.save_macros({"deploy": "Ship it"})
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/deploy"}}
+    )
+
+    assert bridge.work.get(timeout=1) == (CHAT, "Ship it", None)
+
+
+def test_unknown_slash_without_a_macro_still_errors(tmp_path):
+    bridge = build_bridge(tmp_path, FakeTelegram())
+
+    bridge._handle_update(
+        {"update_id": 1, "message": {"chat": {"id": int(CHAT)}, "text": "/definitelynotacmd"}}
+    )
+
+    assert any("Unknown command" in sent for sent in bridge.telegram.sent)
+    assert bridge.work.empty()
