@@ -3,7 +3,7 @@ name = "opencode-bridge"
 version = "2.3.3"
 description = "Full remote control of a local OpenCode server from Telegram"
 requires-python = ">=3.10"
-dependencies = ["requests>=2.28"]
+dependencies = ["requests>=2.34.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
