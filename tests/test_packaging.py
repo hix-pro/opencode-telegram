@@ -117,3 +117,49 @@ def test_install_scripts_exist_and_are_executable():
         script = ROOT / name
         assert script.exists(), f"{name} is missing"
         assert script.stat().st_mode & 0o111, f"{name} is not executable"
+
+
+def test_service_units_are_sandboxed():
+    """The units are part of the security boundary, not just launchers."""
+    systemd = ROOT / "systemd"
+    bridge = (systemd / "opencode-telegram-bridge.service.in").read_text()
+    for directive in (
+        "NoNewPrivileges=yes",
+        "ProtectKernelTunables=yes",
+        "CapabilityBoundingSet=",
+        "SystemCallFilter=@system-service",
+        "@SANDBOX@",
+    ):
+        assert directive in bridge, f"bridge unit lost {directive}"
+
+    server = (systemd / "opencode-server-hardening.conf.in").read_text()
+    for directive in (
+        "ProtectSystem=strict",
+        "ProtectHome=read-only",
+        "SystemCallFilter=@system-service",
+        "@RW_PATHS@",
+    ):
+        assert directive in server, f"server drop-in lost {directive}"
+
+    watchdog = (systemd / "opencode-watchdog.service.in").read_text()
+    assert "NoNewPrivileges=yes" in watchdog
+    assert "ProtectSystem=strict" in watchdog
+
+    installer = (ROOT / "install.sh").read_text()
+    assert "--harden-server" in installer
+    assert "ReadWritePaths=" in installer
+
+
+def test_release_version_matches_the_changelog():
+    """A tag without a matching changelog entry is an unreviewed release."""
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    match = re.search(r'^version = "([^"]+)"', pyproject, re.M)
+    assert match, "pyproject.toml has no project version"
+    version = match.group(1)
+
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    headings = re.findall(r"^## v([0-9][^\s]*)", changelog, re.M)
+    assert headings, "CHANGELOG.md has no version headings"
+    assert headings[0] == version, (
+        f"pyproject says {version}, CHANGELOG starts at {headings[0]}"
+    )

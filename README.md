@@ -397,8 +397,10 @@ python3 -m pytest -m live
 ```
 
 It covers prompt and streaming round-trips, the event stream delivering text
-deltas, `/api/shell` completion semantics, and the known server limitations
-(`/api/shell` reaping long commands, fs endpoints ignoring `directory`).
+deltas, `/api/shell` completion semantics, concurrent sessions, aborting a
+turn, and the known server limitations (`/api/shell` reaping long commands,
+fs endpoints ignoring `directory`). Tested versions live in
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ## Security
 
@@ -432,7 +434,9 @@ This bridge is a remote shell. Treat these as non-negotiable:
   compromised devices.
 
 For a threat model, a hardened configuration checklist and the limits of the
-application-level controls, see [SECURITY.md](SECURITY.md). For anything
+application-level controls, see [SECURITY.md](SECURITY.md). The units can be
+sandboxed as well: `bash install.sh --harden-server` renders the OS-level
+boundary described in [docs/HARDENING.md](docs/HARDENING.md). For anything
 reachable from Telegram, run the bridge as a dedicated OS user or in a
 container/VM with only the files and credentials it needs.
 
@@ -442,15 +446,20 @@ container/VM with only the files and credentials it needs.
 - An OpenCode server reachable at `OPENCODE_URL`
 - A server password: `opencode service set password "<secret>"`
 
+Tested versions are recorded in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
 ## Development
 
 ```bash
-python3 -m pytest tests -q        # the offline suite, 583 tests
-python3 -m pytest -m live          # 10 checks against a real server
+python3 -m pytest tests -q        # the offline suite
+python3 -m pytest -m live          # contract checks against a real server
 python3 -m ruff check .
 mypy                               # the type gate (pipx install mypy)
 bandit -c pyproject.toml -r bridge.py bridgekit scripts   # the security scan
 ```
+
+CI runs the gates on Python 3.12 and the offline suite on 3.10–3.13, plus
+shellcheck and a full-history secret scan.
 
 The pre-commit hook runs all of these: style, types, the security scan, and
 the offline suite. `mypy`/`bandit` skip themselves with a note if they are

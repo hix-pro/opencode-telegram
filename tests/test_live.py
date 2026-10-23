@@ -208,6 +208,63 @@ def test_localfs_matches_what_the_agent_sees(api, session):
     assert any(e.name == "shared-check.txt" for e in localfs.list_dir(WORKDIR))
 
 
+# ------------------------------------------------- concurrency and interrupts
+
+
+def test_two_sessions_can_run_at_once(api):
+    """The bridge multiplexes chats; the server must not serialize turns.
+
+    A regression here would not show in the hermetic suite, which fakes the
+    API and never exercises two live event streams.
+    """
+    first = api.create_session(WORKDIR)
+    second = api.create_session(WORKDIR)
+    submitted = int(time.time() * 1000)
+    try:
+        api.send_prompt(first["id"], "Reply with exactly: parallel-one")
+        api.send_prompt(second["id"], "Reply with exactly: parallel-two")
+        deadline = time.time() + 120
+        texts: dict[str, str] = {}
+        while time.time() < deadline and len(texts) < 2:
+            for name, session_id in (("one", first["id"]), ("two", second["id"])):
+                if name in texts:
+                    continue
+                text = OpenCode.latest_assistant_text(
+                    api.messages(session_id, 20, "desc"), submitted
+                )
+                if text:
+                    texts[name] = text
+            if len(texts) < 2:
+                time.sleep(0.5)
+        assert "parallel-one" in texts.get("one", "")
+        assert "parallel-two" in texts.get("two", "")
+    finally:
+        for item in (first, second):
+            try:
+                api.delete_session(item["id"])
+            except ApiError:
+                pass
+
+
+def test_abort_leaves_the_session_idle(api, session):
+    """The emergency stop must end the turn, not wedge the session."""
+    submitted = int(time.time() * 1000)
+    api.send_prompt(session, "Count slowly from 1 to 200, one number per line.")
+    time.sleep(1.0)
+    api.interrupt_session(session)
+
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        messages = api.messages(session, 20, "desc")
+        if any(
+            m.get("type") == "idle" and (m.get("time") or {}).get("created", 0) > submitted
+            for m in messages
+        ):
+            return
+        time.sleep(0.5)
+    raise AssertionError("abort did not return the session to idle")
+
+
 # ------------------------------------------------------------------ cleanup
 
 

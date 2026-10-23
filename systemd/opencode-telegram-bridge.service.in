@@ -21,5 +21,31 @@ RestartSec=10
 # mid-turn, which would orphan the turn.
 TimeoutStopSec=30
 
+# --- sandbox ---------------------------------------------------------------
+# The bridge is a remote shell. Application checks decide *who* may act; these
+# directives limit what a compromised bridge process can touch. ReadWritePaths
+# is rendered by install.sh from the checkout, STATE_FILE/LOG_FILE and
+# ALLOWED_ROOTS; system paths stay read-only. Set ALLOWED_ROOTS and re-run
+# install.sh to enable the filesystem half of this block.
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+@SANDBOX@
+
 [Install]
 WantedBy=default.target

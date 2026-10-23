@@ -92,6 +92,10 @@ Recommended for any machine holding real code or credentials:
 - Review `.attachments` retention (`ATTACHMENT_MAX_AGE_HOURS`, 24 h default)
   and clear the cache when sharing the machine.
 
+The unit-level companion to this checklist — systemd sandboxing, writable
+paths, and what it does and does not cover — is in
+[docs/HARDENING.md](docs/HARDENING.md).
+
 ## Known limitations
 
 - **The destructive-command deny-list is defense in depth, not a boundary.**

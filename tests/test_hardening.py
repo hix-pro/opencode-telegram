@@ -394,7 +394,9 @@ def test_worker_is_released_when_a_turn_finishes(tmp_path):
     thread = threading.Thread(target=bridge._worker_loop, daemon=True)
     thread.start()
     bridge.work.put(("42", "job", None))
-    time.sleep(0.6)
+    deadline = time.time() + 5
+    while bridge._chat_busy("42") and time.time() < deadline:
+        time.sleep(0.02)
     assert not bridge._chat_busy("42")
     bridge.stop_event.set()
 

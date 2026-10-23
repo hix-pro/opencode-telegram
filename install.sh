@@ -14,6 +14,25 @@ red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 
+HARDEN_SERVER=0
+for arg in "$@"; do
+    case "$arg" in
+        --harden-server) HARDEN_SERVER=1 ;;
+        -h|--help)
+            echo "Usage: bash install.sh [--harden-server]"
+            echo
+            echo "  --harden-server  also sandbox the opencode-server unit."
+            echo "                   The server executes agent commands; this"
+            echo "                   limits what a compromised turn can touch."
+            exit 0
+            ;;
+        *)
+            red "unknown option: $arg"
+            exit 2
+            ;;
+    esac
+done
+
 echo "Installing the OpenCode Telegram bridge"
 
 # ------------------------------------------------------------------- checks
@@ -65,16 +84,72 @@ if [[ "$HERE" =~ [[:space:]] ]]; then
 fi
 PYTHON_BIN="$(command -v python3)"
 render_unit() {
-    python3 - "$1" "$2" "$UNIT_REPO" "$PYTHON_BIN" << 'PY'
+    python3 - "$1" "$2" "$UNIT_REPO" "$PYTHON_BIN" "$HERE/.env" << 'PY'
 import sys
-src, dst, repo, python = sys.argv[1:5]
+from pathlib import Path
+
+src, dst, repo, python, env_path = sys.argv[1:6]
+
+values = {}
+env = Path(env_path)
+if env.exists():
+    for raw in env.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+
+
+def resolved(raw):
+    return str(Path(raw).expanduser().resolve())
+
+
+def quoted(path):
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def rw_lines():
+    paths = [resolved(repo)]
+    for entry in values.get("ALLOWED_ROOTS", "").split(","):
+        if entry.strip():
+            paths.append(resolved(entry.strip()))
+    for key in ("STATE_FILE", "LOG_FILE"):
+        raw = values.get(key, "").strip()
+        if raw:
+            paths.append(resolved(Path(raw).expanduser().parent))
+    lines = []
+    for path in dict.fromkeys(paths):
+        prefix = "" if Path(path).exists() else "-"
+        lines.append(f"ReadWritePaths={prefix}{quoted(path)}")
+    return "\n".join(lines)
+
+
+# The filesystem half of the sandbox is only meaningful (and only safe to
+# enable) when ALLOWED_ROOTS narrows the tree. Unrestricted installs keep the
+# app-level allow-list and the non-filesystem hardening in the template.
+if values.get("ALLOWED_ROOTS", "").strip():
+    sandbox = "\n".join(
+        ["ProtectSystem=strict", "ProtectHome=read-only", rw_lines()]
+    )
+else:
+    sandbox = (
+        "# Filesystem sandbox disabled: ALLOWED_ROOTS is empty. The application\n"
+        "# allow-list is the only boundary. Set roots and re-run install.sh."
+    )
+
 out = (
-    open(src).read()
+    Path(src)
+    .read_text()
     .replace("@REPO@", repo)
     .replace("@PYTHON@", python)
+    .replace("@RW_PATHS@", rw_lines())
+    .replace("@SANDBOX@", sandbox)
 )
-with open(dst, "w") as fh:
-    fh.write(out)
+Path(dst).write_text(out)
 PY
 }
 
@@ -90,6 +165,25 @@ render_unit "$HERE/systemd/$WATCHDOG.service.in" "$UNIT_DIR/$WATCHDOG.service"
 cp "$HERE/systemd/$WATCHDOG.timer" "$UNIT_DIR/$WATCHDOG.timer"
 info "watchdog units installed to $UNIT_DIR"
 
+# Optional, but the server is where /sh and the agent's tools actually run.
+# Installing its drop-in without roots would make every project read-only,
+# so refuse rather than produce a bridge that cannot work.
+SERVER_DROPIN=0
+if [ "$HARDEN_SERVER" = 1 ]; then
+    if grep -qE '^[[:space:]]*ALLOWED_ROOTS=.+' "$HERE/.env"; then
+        SERVER_DROPIN_DIR="$UNIT_DIR/opencode-server.service.d"
+        mkdir -p "$SERVER_DROPIN_DIR"
+        render_unit \
+            "$HERE/systemd/opencode-server-hardening.conf.in" \
+            "$SERVER_DROPIN_DIR/50-hardening.conf"
+        SERVER_DROPIN=1
+        info "server hardening drop-in installed"
+    else
+        red "not hardening the server: ALLOWED_ROOTS is empty"
+        info "set ALLOWED_ROOTS in .env, then re-run with --harden-server"
+    fi
+fi
+
 systemctl --user daemon-reload
 
 # The watchdog note: enable the timer right with the service.
@@ -98,6 +192,11 @@ if systemctl --user is-active --quiet "$WATCHDOG.timer"; then
 else
     systemctl --user enable --now "$WATCHDOG.timer" >/dev/null
     info "watchdog timer enabled"
+fi
+
+if [ "$SERVER_DROPIN" = 1 ] && systemctl --user is-active --quiet opencode-server.service; then
+    systemctl --user restart opencode-server.service
+    info "opencode-server restarted with hardening"
 fi
 
 if systemctl --user is-active --quiet "$UNIT_NAME"; then
@@ -125,6 +224,8 @@ Next steps
   2. /help lists every command.
   3. Logs:  journalctl --user-unit=$UNIT_NAME -f --no-pager
            tail -f $HERE/bridge.log
+  4. Harden the execution surface as well:
+           bash install.sh --harden-server
 
 To uninstall:  $HERE/uninstall.sh
 EOF

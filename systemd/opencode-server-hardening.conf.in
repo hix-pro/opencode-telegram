@@ -1,0 +1,44 @@
+# Sandbox for the process that actually executes agent commands.
+#
+# The OpenCode server is the execution surface behind /sh and the agent's
+# tools; hardening only the bridge would leave the larger half unprotected.
+# Render this drop-in with `bash install.sh --harden-server`, which fills
+# @RW_PATHS@ from ALLOWED_ROOTS. Re-run it after changing the roots.
+#
+# The server still runs as your user. This limits system paths, privilege
+# escalation and temp-file visibility, but with ALLOWED_ROOTS=$HOME it does
+# not hide your home directory. Use a dedicated user, container or VM for
+# real isolation.
+
+[Service]
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+@RW_PATHS@
+# OpenCode's own state, auth and cache. `-` tolerates a first run before the
+# directory exists; the roots above already cover these on a broad setup.
+ReadWritePaths=-%h/.config/opencode
+ReadWritePaths=-%h/.local/share/opencode
+ReadWritePaths=-%h/.local/state/opencode
+ReadWritePaths=-%h/.cache
+ReadWritePaths=-%h/.npm
+# Agent tooling legitimately uses shared temp; keep it visible to the user
+# (unlike PrivateTmp, which would hide build artifacts).
+ReadWritePaths=/tmp
+ReadWritePaths=/var/tmp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

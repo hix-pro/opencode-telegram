@@ -45,7 +45,7 @@ from typing import Any
 
 import requests
 
-from bridgekit import attachments, commands, keyboards
+from bridgekit import attachments, authz, commands, keyboards
 from bridgekit.api import ApiError, OpenCode
 from bridgekit.config import Config, ConfigError
 from bridgekit.events import EventStream
@@ -538,15 +538,13 @@ class Bridge:
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
-        chat_id = str((message.get("chat") or {}).get("id", ""))
-        if chat_id not in self.config.allowed_chats:
-            # Not on the allow-list: ignore completely, no error, no hint.
-            return
         # The chat alone is not enough in a group: any member could otherwise
-        # send prompts, /sh or attachments. Require the sender too, matching
-        # edits, reactions and buttons. In a private chat both ids are equal.
-        sender = str((message.get("from") or {}).get("id", "") or chat_id)
-        if sender not in self.config.allowed_chats:
+        # send prompts, /sh or attachments. The shared rule also checks the
+        # sender, matching edits, reactions and buttons.
+        chat_id = authz.authorize(
+            message.get("chat"), message.get("from"), self.config.allowed_chats
+        )
+        if not chat_id:
             return
 
         if "message" not in update:
@@ -602,14 +600,15 @@ class Bridge:
         self.send(chat_id, reply, ctx.markup)
 
     def _handle_callback(self, query: dict) -> None:
-        chat_id = str((query.get("message") or {}).get("chat", {}).get("id", ""))
-        if chat_id not in self.config.allowed_chats:
-            return
         # Buttons approve permissions and abort turns. In a group the chat id
-        # can be allow-listed while the person tapping is not, so the sender
-        # must pass the same check reactions and edits already use.
-        sender = str((query.get("from") or {}).get("id", "") or chat_id)
-        if sender not in self.config.allowed_chats:
+        # can be allow-listed while the person tapping is not, so the shared
+        # rule checks both.
+        chat_id = authz.authorize(
+            (query.get("message") or {}).get("chat"),
+            query.get("from"),
+            self.config.allowed_chats,
+        )
+        if not chat_id:
             return
         action, argument = keyboards.decode(query.get("data") or "")
         handler = self.router.resolve(action)
@@ -633,9 +632,6 @@ class Bridge:
         sender = message.get("from") or {}
         if sender.get("is_bot"):
             return
-        reactor = str(sender.get("id", "") or chat_id)
-        if reactor not in self.config.allowed_chats:
-            return
         text = keyboards.from_menu((message.get("text") or "").strip())
         if not text or text.startswith("/"):
             # Slash commands already ran when first sent - and a menu label's
@@ -657,12 +653,12 @@ class Bridge:
         newly added reaction acts - removing one must never repeat an
         action.
         """
-        chat_id = str((reaction.get("chat") or {}).get("id", ""))
-        if chat_id not in self.config.allowed_chats:
+        chat_id = authz.authorize(
+            reaction.get("chat"), reaction.get("user"), self.config.allowed_chats
+        )
+        if not chat_id:
             return
         reactor = str((reaction.get("user") or {}).get("id", "") or chat_id)
-        if reactor not in self.config.allowed_chats:
-            return
         emojis = [str(r.get("emoji") or "") for r in reaction.get("new_reaction") or []]
         if not emojis:
             return

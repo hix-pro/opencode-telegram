@@ -11,3 +11,26 @@ Type=oneshot
 # webhook before the restart; unset means restart silently.
 EnvironmentFile=-@REPO@/.env
 ExecStart="@PYTHON@" "@REPO@/scripts/heartbeat_watchdog.py" "@REPO@/.bridge-heartbeat" --max-age 180
+
+# The watchdog only reads the heartbeat and asks the user manager to restart
+# the bridge; it needs no writable filesystem at all.
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.3.0 — 2026-10-23
+
+Containment and release confidence. v2.2.x closed the authorization gaps;
+this release reduces what a compromised bridge or agent can touch, and makes
+the supported surface explicit.
+
+### Added
+
+- **Sandboxed systemd units.** `install.sh` now renders the bridge and
+  watchdog with `NoNewPrivileges`, an empty capability set,
+  `ProtectSystem=strict`, `ProtectHome=read-only`, kernel/clock/hostname
+  protection and a `@system-service` syscall filter. Writable paths are
+  derived from the checkout, `STATE_FILE`/`LOG_FILE` and `ALLOWED_ROOTS`.
+  The bridge's measured exposure fell from 9.8 to 3.3.
+- **`install.sh --harden-server`.** An optional drop-in sandboxes
+  `opencode-server` — the process that actually executes `/sh` and agent
+  tools. The hardened unit scores 3.5. The installer refuses to install it
+  without `ALLOWED_ROOTS`, which it uses to derive writable paths.
+- **`docs/HARDENING.md`** explains both layers, the path model, measured
+  scores, rollback, and what the sandbox does not cover.
+- **`docs/COMPATIBILITY.md`** records tested bridge, Python, OpenCode and OS
+  versions and how the live suite produces that table.
+- Live tests for two concurrent sessions and abort-to-idle.
+- CI: Python 3.10–3.13 matrix, shellcheck, full-history gitleaks scan, and
+  Dependabot.
+- Packaging guards for unit sandboxing and for pyproject/CHANGELOG version
+  agreement.
+
+### Changed
+
+- **One authorization implementation.** `bridgekit/authz.py` owns the
+  chat-plus-sender rule used by messages, edits, reactions and buttons. No
+  behavior change.
+
+### Notes
+
+- With `ALLOWED_ROOTS=$HOME`, the sandbox protects system paths and
+  privileges but not same-user secrets. Narrow the roots or use a dedicated
+  account/container for real isolation; `docs/HARDENING.md` is explicit about
+  the boundary.
+
 ## v2.2.5 — 2026-10-23
 
 Uniform authorization and poll-loop resilience, prompted by a follow-up

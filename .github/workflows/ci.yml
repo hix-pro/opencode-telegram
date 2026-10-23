@@ -46,3 +46,46 @@ jobs:
 
       - name: Offline test suite
         run: pytest
+
+  tests:
+    # The package claims >=3.10 and the code is written for it; prove that on
+    # every supported interpreter instead of trusting the newest one.
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install runtime and test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests==2.31.0 pytest==9.1.1
+      - name: Offline test suite
+        run: pytest
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: Syntax
+        run: bash -n install.sh uninstall.sh hooks/pre-commit
+      - name: Shellcheck
+        run: shellcheck install.sh uninstall.sh hooks/pre-commit
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Scan history for leaked credentials
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

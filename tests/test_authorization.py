@@ -93,3 +93,18 @@ def test_a_group_needs_both_the_chat_and_the_user(tmp_path):
     bridge._handle_update(message(chat_id="42", sender=STRANGER, text="group work"))
     chat_id, text, _files = bridge.work.get(timeout=1)
     assert (chat_id, text) == ("42", "group work")
+
+
+def test_the_shared_rule_requires_both_ids():
+    """One function is the rule for every update type."""
+    from bridgekit.authz import authorize
+
+    allowed = frozenset({"42", "99"})
+
+    assert authorize({"id": 42}, {"id": 42}, allowed) == "42"
+    assert authorize({"id": 42}, {"id": 99}, allowed) == "42"
+    assert authorize({"id": 777}, {"id": 777}, allowed) == ""
+    assert authorize({"id": 42}, {"id": 7}, allowed) == ""
+    assert authorize(None, {"id": 42}, allowed) == ""
+    # Channel posts have no `from`; the chat id is the actor fallback.
+    assert authorize({"id": 42}, None, allowed) == "42"
