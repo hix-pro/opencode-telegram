@@ -41,6 +41,16 @@ if [ ! -f "$HERE/.env" ]; then
     fi
 fi
 
+# The default is unrestricted; say so loudly rather than letting a public bot
+# token become a whole-home shell by accident. Applies to existing .env files
+# too, so upgrades get the warning as well.
+if ! grep -qE '^[[:space:]]*ALLOWED_ROOTS=.+' "$HERE/.env"; then
+    echo
+    red "ALLOWED_ROOTS is not set - the bridge is unrestricted."
+    info "Confine it to the directories you actually need, e.g.:"
+    info "  ALLOWED_ROOTS=$HOME/projects"
+fi
+
 # The unit files are rendered from the repo's templates so a checkout may
 # live anywhere. But systemd's WorkingDirectory=/EnvironmentFile= take raw
 # paths and cannot be quoted (only ExecStart= arguments can), so a checkout

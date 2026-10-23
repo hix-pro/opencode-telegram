@@ -335,6 +335,33 @@ def test_strangers_cannot_press_buttons(bridge):
     assert bridge.telegram.answered == []
 
 
+def test_a_stranger_in_an_allowed_chat_cannot_press_buttons(bridge):
+    """A group can be allow-listed without every member being trusted.
+
+    Checking only the chat would let any group member approve a permission
+    request or abort someone else's turn, which is why the sender has to pass
+    the allow-list too - the same rule reactions and edits already follow.
+    """
+    bridge.state.set_session(CHAT, "ses_aaaaaaaaaaaa1111")
+    busy = threading.Event()
+    bridge._workers[CHAT] = threading.Thread(target=busy.wait, daemon=True)
+    bridge._workers[CHAT].start()
+    try:
+        bridge._handle_callback(
+            {
+                "id": "cb1",
+                "data": "abort",
+                "from": {"id": "99"},
+                "message": {"chat": {"id": CHAT}},
+            }
+        )
+        assert bridge.api.interrupted == []
+        assert not bridge.abort_flag(CHAT).is_set()
+        assert bridge.telegram.answered == []
+    finally:
+        busy.set()
+
+
 def test_unknown_button_data_is_ignored(bridge):
     press(bridge, "something_malicious:payload")
     assert bridge.api.replies == []

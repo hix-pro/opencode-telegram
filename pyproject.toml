@@ -1,6 +1,6 @@
 [project]
 name = "opencode-bridge"
-version = "2.2.3"
+version = "2.2.4"
 description = "Full remote control of a local OpenCode server from Telegram"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.28"]

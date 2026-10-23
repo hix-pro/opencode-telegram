@@ -82,6 +82,23 @@ def test_store_writes_the_file_and_builds_a_uri(tmp_path):
     assert "note.txt" in stored.caption
 
 
+def test_cache_and_downloads_are_owner_only(tmp_path):
+    """Attachment copies can contain credentials or private source; the cache
+    directory and every file in it must not inherit a permissive umask."""
+    import stat
+
+    class FakeTelegram:
+        def download(self, file_id, destination):
+            Path(destination).write_bytes(b"secret")
+            return Path(destination)
+
+    cache = tmp_path / ".attachments"
+    stored = attachments.store(FakeTelegram(), "f1", "note.txt", "document", cache)
+
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o700
+    assert stat.S_IMODE(stored.path.stat().st_mode) == 0o600
+
+
 def test_store_rejects_oversized_files(tmp_path):
     class BigTelegram:
         def download(self, file_id, destination):

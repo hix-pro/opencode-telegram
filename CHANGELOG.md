@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.2.4 — 2026-10-23
+
+Hardening from an external security review: the application-level controls now
+match what the documentation claims.
+
+### Fixed
+
+- **Buttons checked the chat, not the sender.** In an allow-listed group any
+  member could approve a permission request or abort a turn. Inline-button
+  callbacks now require `from.id` on the allow-list, the same rule reactions
+  and edits already used.
+- **The attachment cache inherited the umask.** `.attachments` is now created
+  `0700` and every download is chmodded `0600`, so copies of sent files are
+  not world-readable.
+- **Unrestricted mode was silent.** Starting with an empty `ALLOWED_ROOTS` now
+  logs a warning, and `install.sh` warns when the `.env` has no roots set.
+
+### Added
+
+- Adversarial tests: a stranger in an allow-listed chat cannot press buttons,
+  a symlinked directory or file cannot escape `ALLOWED_ROOTS`, and the
+  attachment cache is owner-only.
+- `SECURITY.md` threat model, the authorization rule for every update type, a
+  hardened configuration checklist, and an explicit limitations section.
+
+### Changed
+
+- `README.md` security section: the deny-list is documented as defense in
+  depth rather than a sandbox, and the button/reaction sender checks and
+  attachment cache retention are called out.
+
 ## v2.2.3 — 2026-10-22
 
 Release readiness: the repo becomes publishable as-is, with no behavioral

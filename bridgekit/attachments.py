@@ -72,13 +72,31 @@ def extract(message: dict) -> tuple[str, str, str] | None:
     return None
 
 
+def ensure_cache_dir(cache: Path) -> None:
+    """Create the attachment cache readable only by its owner.
+
+    The cache holds copies of files sent to the agent, which can contain
+    anything a document can: credentials, source, personal data. It must not
+    inherit a permissive umask.
+    """
+    cache.mkdir(parents=True, exist_ok=True)
+    try:
+        cache.chmod(0o700)
+    except OSError:
+        pass
+
+
 def store(
     telegram, file_id: str, name: str, kind: str, cache: Path, caption: str = ""
 ) -> Attachment:
     """Download an attachment into the cache and describe it for the agent."""
-    cache.mkdir(parents=True, exist_ok=True)
+    ensure_cache_dir(cache)
     destination = cache / f"{int(time.time())}-{name}"
     telegram.download(file_id, destination)
+    try:
+        destination.chmod(0o600)
+    except OSError:
+        pass
 
     size = destination.stat().st_size
     if size > MAX_BYTES:

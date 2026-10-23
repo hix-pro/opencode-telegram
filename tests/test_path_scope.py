@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import pytest
 
+from bridgekit import localfs
 from bridgekit.commands import run
 from bridgekit.config import Config, ConfigError
+from bridgekit.localfs import PathError
 
 # --------------------------------------------------------------- containment
 
@@ -36,6 +38,34 @@ def test_relative_path_inside_the_root_is_allowed(tmp_path):
     root.mkdir()
     config = scoped(tmp_path, [root])
     assert config.check_path(str(root), "notes.md") == str(root / "notes.md")
+
+
+def test_a_symlinked_session_dir_cannot_escape_the_roots(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside)
+    config = scoped(tmp_path, [root])
+
+    with pytest.raises(ConfigError, match="outside the allowed roots"):
+        config.resolve_dir(str(root / "escape"))
+
+
+def test_a_symlinked_file_cannot_escape_the_roots(tmp_path):
+    """resolve() must happen before the containment check, or a link inside
+    the root would hand out a file that lives outside it."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("do not read me")
+    (root / "leak").symlink_to(secret)
+    config = scoped(tmp_path, [root])
+
+    with pytest.raises(PathError, match="outside the allowed roots"):
+        localfs.read_file(str(root), "leak", config.allowed_roots)
 
 
 def test_traversal_out_of_the_root_is_refused(tmp_path):

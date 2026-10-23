@@ -165,7 +165,7 @@ class Bridge:
 
         self._report_orphaned_turns()
 
-        self.config.attachments_dir.mkdir(parents=True, exist_ok=True)
+        attachments.ensure_cache_dir(self.config.attachments_dir)
         self._publish_command_list()
         self._mount_menu()
 
@@ -586,6 +586,12 @@ class Bridge:
     def _handle_callback(self, query: dict) -> None:
         chat_id = str((query.get("message") or {}).get("chat", {}).get("id", ""))
         if chat_id not in self.config.allowed_chats:
+            return
+        # Buttons approve permissions and abort turns. In a group the chat id
+        # can be allow-listed while the person tapping is not, so the sender
+        # must pass the same check reactions and edits already use.
+        sender = str((query.get("from") or {}).get("id", "") or chat_id)
+        if sender not in self.config.allowed_chats:
             return
         action, argument = keyboards.decode(query.get("data") or "")
         handler = self.router.resolve(action)
@@ -1344,6 +1350,12 @@ def main() -> int:
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
+
+    if config.unrestricted:
+        log.warning(
+            "ALLOWED_ROOTS is empty: sessions may target any directory on this "
+            "machine. Set ALLOWED_ROOTS to confine the bridge."
+        )
 
     bridge = Bridge(config)
 

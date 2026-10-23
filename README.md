@@ -406,21 +406,35 @@ This bridge is a remote shell. Treat these as non-negotiable:
 
 - **`TELEGRAM_CHAT_ID` is mandatory.** The bridge refuses to start without it.
   Without the allow-list, anyone who finds your bot token gets code execution.
+  Every update type is checked: messages, edits, reactions and inline buttons.
+  Reactions and buttons also require the sender to be on the list, so
+  allow-listing a group does not trust every member.
 - **`ALLOWED_ROOTS` is optional but recommended.** Empty means sessions may
-  target any directory on the machine, mirroring your terminal. Set it to
-  confine the bridge. It is enforced client-side on every file command; the
-  server confines none of them.
+  target any directory on the machine, mirroring your terminal; the bridge
+  warns about that at startup and during install. Set it to confine the
+  bridge. It is enforced client-side on every file command, including
+  symlinks; the server confines none of them.
 - **`/sh` runs arbitrary commands.** Same blast radius as your own account.
-- **`/auto all` is guarded.** A deny-list of destructive commands
-  (`rm -rf`, `mkfs`, `curl | sh`, `sudo`, `git push --force`, ...) is force-rejected
-  regardless of the approval mode. `/guard` shows and edits it. The guard is the
-  reason `all` mode is offered at all.
+  It is user-initiated and does not pass through the approval pipeline.
+- **`/auto all` is guarded, not sandboxed.** A deny-list of destructive
+  commands (`rm -rf`, `mkfs`, `curl | sh`, `sudo`, `git push --force`, ...) is
+  force-rejected regardless of the approval mode. `/guard` shows and edits it.
+  Regexes cannot cover every shell construction: the guard prevents accidents,
+  not a determined attack.
+- **Attachments are cached on disk.** Files you send are copied to
+  `.attachments` beside the state file (owner-only `0700`/`0600`) and pruned
+  after `ATTACHMENT_MAX_AGE_HOURS` (24 by default).
 - **Keep secrets in the environment.** Don't hardcode the bot token, and don't
   paste `.env` into the chat the bot is serving.
 - **Your messages are logged.** The first `LOG_PROMPT_CHARS` characters of each
   prompt go to the journal for debugging. Set it to `0` to log nothing.
 - **Telegram is not private.** Bot tokens leak through logs, screenshots, and
   compromised devices.
+
+For a threat model, a hardened configuration checklist and the limits of the
+application-level controls, see [SECURITY.md](SECURITY.md). For anything
+reachable from Telegram, run the bridge as a dedicated OS user or in a
+container/VM with only the files and credentials it needs.
 
 ## Requirements
 
