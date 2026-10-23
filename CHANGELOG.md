@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.3.1 — 2026-10-23
+
+Internal refactor. No user-visible behavior, configuration, or wire-format
+change.
+
+### Changed
+
+- `bridgekit/commands.py` is now the registry/context/dispatcher facade;
+  handlers live in `bridgekit/command_handlers/` (`sessions`, `files`,
+  `permissions`, `inspect`, `policy`, `operations`). It shrank from 1,697 to
+  393 lines. The facade preserves `bridgekit.commands` imports and the
+  `SHELL_PROBE` patch point used by tests.
+- `bridge.py` now owns lifecycle and polling; update ingress, callbacks, turn
+  execution and watchers moved to `bridgekit/updates.py`, `callbacks.py`,
+  `turns.py` and `watchers.py`. It shrank from 1,416 to 643 lines. `Bridge`
+  keeps thin wrappers so existing callbacks, tests and monkeypatches still
+  dispatch through the same method names.
+
+### Verified
+
+- Full offline suite, 12 live tests, ruff, mypy, bandit and shellcheck.
+
 ## v2.3.0 — 2026-10-23
 
 Containment and release confidence. v2.2.x closed the authorization gaps;

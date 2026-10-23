@@ -22,6 +22,12 @@ without a reply. Sessions may target any directory unless ``ALLOWED_ROOTS``
 is set. A deny-list blocks destructive commands from being auto-approved even
 when the policy is ``all``. The bot token and server password are read from the
 environment and never written to disk or the log.
+
+The implementation is split by concern: update ingress and attachments live in
+``bridgekit/updates.py``, button callbacks in ``bridgekit/callbacks.py``, turn
+execution in ``bridgekit/turns.py`` and the permission/schedule watchers in
+``bridgekit/watchers.py``. ``Bridge`` keeps thin wrappers so callbacks and tests
+can patch the historic method names.
 """
 
 from __future__ import annotations
@@ -30,12 +36,7 @@ import logging
 import logging.handlers
 import os
 import queue
-import shlex
 import signal
-
-# Suppression justification: bridge.py has exactly one sanctioned shell-out
-# (the STT transcription below); everything else here spawns nothing at all.
-import subprocess  # nosec
 import sys
 import threading
 import time
@@ -45,7 +46,7 @@ from typing import Any
 
 import requests
 
-from bridgekit import attachments, authz, commands, keyboards
+from bridgekit import attachments, callbacks, commands, keyboards, turns, updates, watchers
 from bridgekit.api import ApiError, OpenCode
 from bridgekit.config import Config, ConfigError
 from bridgekit.events import EventStream
@@ -56,28 +57,6 @@ from bridgekit.state import State
 from bridgekit.telegram import Telegram, TelegramError
 
 log = logging.getLogger("bridge")
-
-MAX_SEEN_PERMISSIONS = 500
-
-# Pending requests cached for button presses.
-MAX_CACHED_REQUESTS = 200
-
-# Messages held per chat while a turn is running.
-MAX_BACKLOG = 5
-
-# How often the scheduler checks for due work.
-SCHEDULE_TICK = 60
-
-# Consecutive transport failures that mean the OpenCode server is gone rather
-# than briefly busy. Five polls at the default 2s cadence is about ten seconds.
-MAX_TRANSPORT_FAILURES = 5
-
-# Reactions that steer the bridge without typing. Approve answers every
-# pending permission request for the chat once; stop interrupts the turn
-# that is running. Only a newly *added* reaction acts, so removing one
-# never repeats anything.
-APPROVE_REACTIONS = frozenset({"👍"})
-STOP_REACTIONS = frozenset({"👎", "🛑"})
 
 
 @dataclass
@@ -226,101 +205,6 @@ class Bridge:
                 f"The bridge restarted {minutes}m into a turn.{tail}\n"
                 "Resend your message to pick up from here.",
             )
-
-    def _register_callbacks(self) -> None:
-        router = self.router
-
-        def permission_handler(decision: str):
-            def handler(chat_id: str, request_id: str) -> None:
-                self._reply_permission(chat_id, request_id, decision)
-
-            return handler
-
-        router.on("perm_yes")(permission_handler("once"))
-        router.on("perm_always")(permission_handler("always"))
-        router.on("perm_no")(permission_handler("reject"))
-
-        @router.on("cmd")
-        def _run_command(chat_id: str, argument: str) -> None:
-            self._run_command_text(chat_id, "/" + argument)
-
-        @router.on("abort")
-        def _abort(chat_id: str, argument: str) -> None:
-            # Same semantics as typed /abort: stop when something is running,
-            # say so otherwise, and never leave a stale abort flag armed.
-            self._stop_turn(chat_id)
-
-        @router.on("info")
-        def _info(chat_id: str, argument: str) -> None:
-            self._run_command_text(chat_id, "/info")
-
-        @router.on("compact")
-        def _compact(chat_id: str, argument: str) -> None:
-            session = self.state.session(chat_id)
-            if not session:
-                return
-            try:
-                self.api.compact_session(session)
-            except ApiError as exc:
-                log.warning("Compact failed: %s", exc)
-
-        @router.on("use")
-        def _use(chat_id: str, argument: str) -> None:
-            """Switch using the id suffix carried on the button."""
-            if not argument:
-                return
-            try:
-                sessions = self.api.list_sessions(
-                    directory=self.state.directory(chat_id), limit=50
-                )
-            except ApiError:
-                return
-            matches = [s for s in sessions if (s.get("id") or "").endswith(argument)]
-            if not matches:
-                # The list is a recent window and pages shift; silence here
-                # looks exactly like a dead button.
-                self.send(chat_id, "! That session is no longer in the recent list.")
-                return
-            session = matches[0]
-            directory = session.get("directory") or self.state.directory(chat_id)
-            try:
-                # The button path used to skip the containment check the
-                # typed /use does: a directory deleted after the button was
-                # rendered would switch the chat onto a session that fails
-                # on every prompt.
-                self.config.resolve_dir(directory)
-            except ConfigError as exc:
-                self.send(chat_id, f"! Cannot switch: {exc}")
-                return
-            self.state.set_session(chat_id, session["id"], directory=directory)
-            # Never a silent switch: the user tapped something, and
-            # Telegram shows nothing on its own.
-            title = (session.get("title") or "").strip()[:40]
-            suffix = session["id"][-8:]
-            self.send(
-                chat_id,
-                f'Switched to "{title}" ({suffix}).'
-                if title
-                else f"Switched to session {suffix}.",
-            )
-
-    def _run_command_text(self, chat_id: str, text: str) -> None:
-        """Run a command on behalf of a button press."""
-        try:
-            ctx = self.context(chat_id)
-            reply = commands.run(ctx, text)
-        except commands.CommandError as exc:
-            self.send(chat_id, f"! {exc}")
-            return
-        except ApiError as exc:
-            self.send(chat_id, f"! {exc.message}")
-            return
-        except Exception:
-            log.exception("Callback command failed")
-            self.send(chat_id, "! Internal error; check the bridge log.")
-            return
-        if reply:
-            self.send(chat_id, reply, ctx.markup)
 
     def _publish_command_list(self) -> None:
         """Publish commands and the menu button so the UI knows what exists.
@@ -526,437 +410,66 @@ class Bridge:
                 # it, so those were replayed as duplicate turns on restart.
                 self.state.save_offset(offset)
 
-    def _handle_update(self, update: dict) -> None:
-        if "callback_query" in update:
-            self._handle_callback(update["callback_query"])
-            return
-
-        if "message_reaction" in update:
-            self._handle_reaction(update["message_reaction"])
-            return
-
-        message = update.get("message") or update.get("edited_message")
-        if not message:
-            return
-        # The chat alone is not enough in a group: any member could otherwise
-        # send prompts, /sh or attachments. The shared rule also checks the
-        # sender, matching edits, reactions and buttons.
-        chat_id = authz.authorize(
-            message.get("chat"), message.get("from"), self.config.allowed_chats
-        )
-        if not chat_id:
-            return
-
-        if "message" not in update:
-            # Telegram reposted an edit (to a user or bot message).
-            self._handle_edited_message(chat_id, message)
-            return
-
-        # A file, caption, or voice note instead of a command.
-        found = attachments.extract(message)
-        if found:
-            self._handle_attachment(chat_id, message, *found)
-            return
-
-        text = (message.get("text") or "").strip()
-        if not text:
-            return
-
-        # A tap on the bottom keyboard arrives as its label; run what the
-        # label stands for. Unknown labels are not commands and need no
-        # translation.
-        text = keyboards.from_menu(text)
-
-        if self.abort_flag(chat_id).is_set() and not text.startswith("/abort"):
-            self.abort_flag(chat_id).clear()
-
-        try:
-            ctx = self.context(chat_id)
-            reply = commands.run(ctx, text)
-        except commands.CommandError as exc:
-            self.send(chat_id, f"! {exc}")
-            return
-        except ApiError as exc:
-            log.warning("Command failed: %s", exc)
-            self.send(chat_id, f"! OpenCode error {exc.status or ''}: {exc.message}".strip())
-            return
-        except Exception:
-            log.exception("Command raised")
-            self.send(chat_id, "! Internal error; check the bridge log.")
-            return
-
-        if reply is None:
-            # A macro rewrote the text into the standing prompt it stands
-            # for; otherwise the raw text is the prompt. commands.run()
-            # refuses to hand back an empty rewrite, but the guard stays:
-            # queueing "" would silently swallow the message.
-            prompt = ctx.rewrite if ctx.rewrite is not None else text
-            if prompt:
-                self.work.put((chat_id, prompt, None))
-            return
-        if text.startswith("/help"):
-            self.send(chat_id, reply, keyboards.help_buttons())
-            return
-        self.send(chat_id, reply, ctx.markup)
-
-    def _handle_callback(self, query: dict) -> None:
-        # Buttons approve permissions and abort turns. In a group the chat id
-        # can be allow-listed while the person tapping is not, so the shared
-        # rule checks both.
-        chat_id = authz.authorize(
-            (query.get("message") or {}).get("chat"),
-            query.get("from"),
-            self.config.allowed_chats,
-        )
-        if not chat_id:
-            return
-        action, argument = keyboards.decode(query.get("data") or "")
-        handler = self.router.resolve(action)
-        self.telegram.answer_callback(query.get("id", ""))
-        if handler:
-            try:
-                handler(chat_id, argument)
-            except Exception:
-                log.exception("Callback %s failed", action)
-
-    def _handle_edited_message(self, chat_id: str, message: dict) -> None:
-        """Editing a sent message resends its text as a fresh prompt.
-
-        The chat history doubles as the queue: correct a typo, refine an
-        ask, and the new wording becomes a new turn without retyping.
-        The bridge's own edits never count - those are progress updates -
-        and slash commands are ignored, because they already ran when
-        first sent and re-running one because its wording changed is more
-        surprise than service.
-        """
-        sender = message.get("from") or {}
-        if sender.get("is_bot"):
-            return
-        text = keyboards.from_menu((message.get("text") or "").strip())
-        if not text or text.startswith("/"):
-            # Slash commands already ran when first sent - and a menu label's
-            # canonical form IS a command, so editing the label "sessions"
-            # once queued the bare word "sessions" as a prompt for the agent.
-            return
-        self.send(chat_id, "Resending your edit as a new prompt.")
-        self.work.put((chat_id, text, None))
-
     # ---------------------------------------------------------- attachments
 
+    # ----------------------------------------------------------- worker loop
+
+    # ------------------------------------------------------- permission loop
+
+    # The implementations live in bridgekit/updates.py, callbacks.py,
+    # turns.py and watchers.py. These wrappers keep the historic Bridge
+    # surface: callbacks, tests and subclasses can patch a method and the
+    # other modules still dispatch through it.
+
+    # --- updates ---
+    def _handle_update(self, update: dict) -> None:
+        updates.handle_update(self, update)
+
+    def _handle_callback(self, query: dict) -> None:
+        updates.handle_callback(self, query)
+
+    def _handle_edited_message(self, chat_id: str, message: dict) -> None:
+        updates.handle_edited_message(self, chat_id, message)
+
     def _handle_reaction(self, reaction: dict) -> None:
-        """A reaction carries the two actions people reach for fastest.
-
-        Approve answers every pending permission request; stop interrupts
-        the running turn. Telegram only delivers these updates because
-        :data:`telegram.ALLOWED_UPDATES` includes ``message_reaction``.
-        Only allow-listed people in allow-listed chats count, and only a
-        newly added reaction acts - removing one must never repeat an
-        action.
-        """
-        chat_id = authz.authorize(
-            reaction.get("chat"), reaction.get("user"), self.config.allowed_chats
-        )
-        if not chat_id:
-            return
-        reactor = str((reaction.get("user") or {}).get("id", "") or chat_id)
-        emojis = [str(r.get("emoji") or "") for r in reaction.get("new_reaction") or []]
-        if not emojis:
-            return
-        # The receipt: per-request reactions were physically dead for a
-        # production round (a wire-format bug), so every arriving reaction
-        # is worth one visible line until proven boring.
-        log.info(
-            "Reaction update: chat %s user %s message %s adds %s",
-            chat_id,
-            reactor,
-            reaction.get("message_id"),
-            emojis,
-        )
-        approve = any(emoji in APPROVE_REACTIONS for emoji in emojis)
-        stop = any(emoji in STOP_REACTIONS for emoji in emojis)
-        if not (approve or stop):
-            return
-
-        # Reacting on a pending permission card is scoped to that one
-        # request: approve it, or reject it, wherever it came from.
-        try:
-            message_id = int(reaction.get("message_id") or 0)
-        except (TypeError, ValueError):
-            return
-        card_request = self._perm_cards.get((chat_id, message_id))
-        if card_request:
-            self._reply_permission(chat_id, card_request, "once" if approve else "reject")
-            return
-
-        if approve:
-            self._approve_all_pending(chat_id)
-        if stop:
-            self._stop_turn(chat_id)
+        updates.handle_reaction(self, reaction)
 
     def _approve_all_pending(self, chat_id: str) -> None:
-        """Approve everything pending in this chat's directory, once each."""
-        try:
-            pending = self.api.permission_requests(directory=self.state.directory(chat_id))
-        except ApiError as exc:
-            log.warning("Reaction approval listing failed: %s", exc)
-            self.send(chat_id, f"! Could not list pending approvals: {exc.message}")
-            return
-        targets = [request for request in pending or [] if request.get("id")]
-        if not targets:
-            self.send(chat_id, "Nothing waiting for approval.")
-            return
-        for request in targets:
-            self._reply_permission(chat_id, str(request["id"]), "once", request)
+        updates.approve_all_pending(self, chat_id)
 
     def _stop_turn(self, chat_id: str) -> None:
-        """Interrupt whatever is running here - the typing-free /abort.
-
-        Fires only when a turn is actually running: arming the abort flag on
-        an idle chat used to kill the *next* turn - often a scheduled job - the
-        moment it started, looking like a random cancellation.
-        """
-        session = self.state.session(chat_id)
-        if not session:
-            self.send(chat_id, "Nothing is running.")
-            return
-        if not self._chat_busy(chat_id):
-            self.send(chat_id, "Nothing is running.")
-            return
-        self.abort_flag(chat_id).set()
-        try:
-            self.api.interrupt_session(session)
-        except ApiError as exc:
-            log.warning("Interrupt failed: %s", exc)
-            self.send(chat_id, f"! Could not interrupt the turn: {exc.message}")
-            return
-        self.send(chat_id, "Stopping - the turn is being interrupted.")
+        updates.stop_turn(self, chat_id)
 
     def _handle_attachment(
         self, chat_id: str, message: dict, file_id: str, name: str, kind: str
     ) -> None:
-        caption = (message.get("caption") or "").strip()
-        try:
-            if kind == "voice":
-                self._handle_voice(chat_id, file_id, name, caption)
-                return
-            stored = attachments.store(
-                self.telegram, file_id, name, kind, self.config.attachments_dir, caption
-            )
-        except (TelegramError, ValueError, OSError) as exc:
-            self.send(chat_id, f"! Could not fetch that file: {exc}")
-            return
-
-        self.work.put((chat_id, caption or stored.caption, [stored.as_payload()]))
+        updates.handle_attachment(self, chat_id, message, file_id, name, kind)
 
     def _handle_voice(self, chat_id: str, file_id: str, name: str, caption: str) -> None:
-        stored = attachments.store(
-            self.telegram, file_id, name, "voice", self.config.attachments_dir
-        )
-        transcript = self._transcribe(stored.path)
-        if transcript:
-            prompt = f"{transcript}\n\n(via voice note)" if not caption else caption
-            self.work.put((chat_id, prompt, None))
-            return
-
-        self.send(
-            chat_id,
-            "Voice note received but no transcription tool is configured.\n"
-            "Set STT_COMMAND in .env, for example:\n"
-            "  STT_COMMAND=whisper -m base {file}\n"
-            "Or reply with a photo or document instead.",
-        )
+        updates.handle_voice(self, chat_id, file_id, name, caption)
 
     def _transcribe(self, path) -> str | None:
-        command = self.config.stt_command
-        if not command:
-            return None
-        try:
-            # Accepted audit finding, kept on purpose: the command template
-            # is the operator's own .env (shell knowledge they already have)
-            # and the substituted path is shell-quoted. The generic "no
-            # shell=True" advice makes exact transcription quoting worse.
-            result = subprocess.run(  # nosec
-                command.format(file=shlex.quote(str(path))),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            log.warning("Transcription failed: %s", exc)
-            return None
-        if result.returncode != 0:
-            log.warning("Transcription exited %s: %s", result.returncode, result.stderr[:200])
-            return None
-        return result.stdout.strip() or None
+        return updates.transcribe(self, path)
 
-    # ----------------------------------------------------------- worker loop
+    # --- callbacks ---
+    def _register_callbacks(self) -> None:
+        callbacks.register_callbacks(self)
 
+    def _run_command_text(self, chat_id: str, text: str) -> None:
+        callbacks.run_command_text(self, chat_id, text)
+
+    # --- turns ---
     def _worker_loop(self) -> None:
-        """Dispatch queued turns, one worker thread per chat.
-
-        Turns are serialised *within* a chat, because a session processes one
-        turn at a time anyway, but different chats run concurrently. A single
-        global worker meant one twenty-minute job silently blocked every other
-        allow-listed user for twenty minutes.
-        """
-        while not self.stop_event.is_set():
-            try:
-                chat_id, text, files = self.work.get(timeout=1.0)
-            except queue.Empty:
-                # The dispatcher demonstrably ran this iteration, so the
-                # infrastructure is alive - the number of registered turn
-                # workers has nothing to do with that.
-                self.health.worker_alive = True
-                continue
-
-            self.health.worker_alive = True
-            # The busy check and the backlog append must be atomic against the
-            # turn worker's "pop worker + drain backlog" section: check-then-act
-            # used to straddle the turn end, so a message could be appended to a
-            # backlog tuple that had already been drained and was never sent.
-            queued = False
-            busy = False
-            with self._lock:
-                busy = self._chat_busy(chat_id)
-                if busy:
-                    backlog = self._backlog.setdefault(chat_id, [])
-                    if len(backlog) < MAX_BACKLOG:
-                        backlog.append((chat_id, text, files))
-                        queued = True
-            if not busy:
-                pass
-            elif queued:
-                # /delivery promises queueing, so hold the message rather than
-                # making the user retype it - and say so, because a silently
-                # delayed message looks like a dropped one.
-                self.send(
-                    chat_id,
-                    "! Queued - I am still working on the previous message.",
-                )
-                self.work.task_done()
-                continue
-            else:
-                self.send(chat_id, "! Backlog full; send that again once I finish.")
-                self.work.task_done()
-                continue
-
-            # Register before starting: the thread sets its own identity on
-            # entry, so between .start() and that assignment a second prompt
-            # for the same chat would look idle and run concurrently.
-            placeholder = threading.current_thread()
-            with self._lock:
-                self._workers[chat_id] = placeholder
-            thread = threading.Thread(
-                target=self._turn_worker,
-                args=(chat_id, text, files),
-                name=f"turn-{chat_id}",
-                daemon=True,
-            )
-            thread.start()
-            self.work.task_done()
+        turns.worker_loop(self)
 
     def _chat_busy(self, chat_id: str) -> bool:
-        worker = self._workers.get(chat_id)
-        return bool(worker and worker.is_alive())
+        return turns.chat_busy(self, chat_id)
 
     def _turn_worker(self, chat_id: str, text: str, files: list | None) -> None:
-        """Run one turn in its own thread. Errors are reported, never raised."""
-        self._workers[chat_id] = threading.current_thread()
-        try:
-            self._run_turn(chat_id, text, files)
-        except ApiError as exc:
-            self.health.errors += 1
-            self.send(chat_id, f"! OpenCode error: {exc.message}")
-        except Exception:
-            log.exception("Turn failed")
-            self.health.errors += 1
-            self.send(chat_id, "! The turn failed; check the bridge log.")
-        finally:
-            self.clear_abort(chat_id)
-            # Pop the worker and drain the backlog as one step so a dispatcher
-            # arriving between the two either still sees this turn as busy (and
-            # appends to the backlog we then drain) or sees it free (and runs
-            # directly). The old pop-then-drain let an interleaved append land
-            # in a backlog nobody would ever revisit.
-            with self._lock:
-                if self._workers.get(chat_id) is threading.current_thread():
-                    self._workers.pop(chat_id, None)
-                drained = self._backlog.pop(chat_id, [])
-            for item in drained:
-                self.work.put(item)
+        turns.turn_worker(self, chat_id, text, files)
 
     def _run_turn(self, chat_id: str, text: str, files: list | None = None) -> None:
-        session = self.ensure_session(chat_id)
-        self.health.turns += 1
-        self.health.last_turn_at = time.time()
-        self.health.prompts += 1
-        log.info(
-            "Prompt for %s (%d chars): %s",
-            chat_id,
-            len(text),
-            text[: self.config.log_prompt_chars].replace("\n", " "),
-        )
-
-        watch = bool(self.state.pref(chat_id, "watch", True) and self.config.stream_enabled)
-        progress = TurnProgress()
-        # Per turn, not on self: with two chats running concurrently, a shared
-        # flag meant one turn's alert silenced the other's, or doubled it.
-        cost_alerted = {"fired": False}
-        message_id = None
-
-        if self.config.stream_enabled:
-            self.events.listen(session, progress.on_event)
-
-        submitted_at = int(time.time() * 1000)
-        delivery = self.state.pref(chat_id, "delivery", self.config.prompt_delivery)
-        try:
-            if watch:
-                # Guarded: a transport error here used to abort the turn before
-                # the prompt was ever submitted, silently losing the message.
-                try:
-                    message_id = self.telegram.send(chat_id, progress.render())
-                except (TelegramError, OSError) as exc:
-                    log.warning(
-                        "Could not post the live placeholder: %s", self.telegram.redact(exc)
-                    )
-                    message_id = None
-
-            # Remember the in-flight turn so a bridge restart can report it
-            # instead of silently orphaning the work.
-            self.state.set_busy(chat_id, session=session, started=submitted_at)
-
-            try:
-                self.api.send_prompt(session, text, files, delivery=delivery)
-            except ApiError as exc:
-                if exc.status != 404:
-                    raise
-                old_session = session
-                session = self._recover_session(chat_id, exc)
-                submitted_at = int(time.time() * 1000)
-                self.state.set_busy(chat_id, session=session, started=submitted_at)
-                if self.config.stream_enabled:
-                    # Unlisten the *old* id: after reassignment the new id was
-                    # never registered, so the dead listener leaked forever.
-                    self.events.unlisten(old_session)
-                    self.events.listen(session, progress.on_event)
-                self.api.send_prompt(session, text, files, delivery=delivery)
-
-            message_id = self._pump(
-                chat_id, session, progress, message_id, submitted_at, watch, cost_alerted
-            )
-        finally:
-            if self.config.stream_enabled:
-                self.events.unlisten(session)
-            self.state.clear_busy(chat_id)
-            self.clear_abort(chat_id)
-
-        final = self._final_text(progress, session, submitted_at)
-        markup = keyboards.session_buttons(session)
-
-        self._deliver_final(chat_id, message_id, final, markup, watch)
-
-        self._check_cost_alert(chat_id, progress, cost_alerted)
+        turns.run_turn(self, chat_id, text, files)
 
     def _pump(
         self,
@@ -968,363 +481,46 @@ class Bridge:
         watch: bool,
         cost_alerted: dict,
     ) -> int | None:
-        """Poll until the turn ends, editing the live message as it goes.
-
-        The hard deadline only fires for genuinely wedged turns. A long but
-        healthy job gets a heads-up at HEADS_UP_AFTER and then keeps waiting,
-        because abandoning a turn that is still running is what makes a chat
-        look dead.
-        """
-        deadline = time.time() + self.config.prompt_timeout
-        heads_up = self.config.heads_up_after
-        warned = False
-        failures = 0
-        last_render = 0.0
-        last_messages: list[dict] = []
-
-        while time.time() < deadline:
-            if self.abort_flag(chat_id).is_set():
-                progress.add_note("interrupted")
-                progress.status = "done"
-                progress.finished_at = time.time()
-                try:
-                    self.api.interrupt_session(session)
-                except ApiError:
-                    pass
-                break
-
-            if not warned and progress.elapsed >= heads_up:
-                warned = True
-                progress.add_note(f"still working after {progress.elapsed / 60:.0f}m")
-                log.info("Long turn in %s after %ds", session, int(progress.elapsed))
-                last_render = 0.0  # force a refresh so the note is visible
-
-            try:
-                messages = self.api.messages(session, limit=30, order="desc")
-                failures = 0
-            except ApiError as exc:
-                # A dead server used to mean silence for the whole timeout -
-                # up to two hours of nothing, one log line every poll. Count
-                # consecutive transport failures and bail out with an
-                # explanation instead.
-                failures += 1
-                if failures == 1 or failures % 15 == 0:
-                    log.warning("Message poll failed (%d in a row): %s", failures, exc)
-                if failures >= MAX_TRANSPORT_FAILURES:
-                    progress.add_note("lost contact with the OpenCode server")
-                    progress.status = "failed"
-                    progress.error = "the server became unreachable"
-                    progress.finished_at = time.time()
-                    self.health.errors += 1
-                    log.error("Abandoning turn after %d transport failures", failures)
-                    break
-                messages = []
-
-            progress.absorb_messages(messages, since=submitted_at)
-            last_messages = messages
-
-            polled = OpenCode.assistant_text(messages, submitted_at)
-            if polled:
-                # The event stream is the fast path for text. If it is down or
-                # dropped events, fall back to what polling already has.
-                # Adopting the polled text only when it is *longer* keeps a
-                # healthy stream authoritative while still letting a turn
-                # whose stream died partway through be repaired - and doing
-                # it under the progress lock stops the adoption from
-                # interleaving with a delta append mid-write.
-                progress.set_if_longer(polled)
-
-            finished = any(
-                m.get("type") == "idle"
-                and (m.get("time") or {}).get("created", 0) > submitted_at
-                for m in messages
-            )
-
-            # Cost alerts fire while the turn is still spending, not only at
-            # the end: by then the money is already gone.
-            if not cost_alerted["fired"] and progress.cost:
-                threshold = float(
-                    self.state.pref(chat_id, "cost_alert", self.config.cost_alert) or 0
-                )
-                if threshold and progress.cost >= threshold:
-                    cost_alerted["fired"] = True
-                    self.send(
-                        chat_id,
-                        f"Cost alert: ${progress.cost:.4f} so far, past your "
-                        f"${threshold:.2f} threshold. /abort if you want it stopped.",
-                    )
-
-            if (
-                watch
-                and message_id
-                and time.time() - last_render >= self.telegram.effective_interval()
-            ):
-                last_render = time.time()
-                try:
-                    self.telegram.edit(chat_id, message_id, progress.render())
-                except (TelegramError, OSError):
-                    # Cosmetic only: never let a progress tick break the turn.
-                    log.debug("Live edit failed", exc_info=True)
-
-            if finished:
-                if not progress.finished_at:
-                    progress.status = "done"
-                    progress.finished_at = time.time()
-                break
-
-            time.sleep(self.config.poll_messages)
-        else:
-            # The turn may still be alive on the server; say so rather than
-            # pretending it ended.
-            progress.add_note("gave up waiting; the job may still be running")
-            progress.status = "done"
-            progress.finished_at = time.time()
-
-        if last_messages:
-            final_polled = OpenCode.assistant_text(last_messages, submitted_at)
-            if final_polled:
-                progress.set_if_longer(final_polled)
-        return message_id
+        return turns.pump(
+            self, chat_id, session, progress, message_id, submitted_at, watch, cost_alerted
+        )
 
     def _deliver_final(
-        self,
-        chat_id: str,
-        message_id: int | None,
-        text: str,
-        markup: dict | None,
-        watch: bool,
+        self, chat_id: str, message_id: int | None, text: str, markup: dict | None, watch: bool
     ) -> None:
-        """Send the finished reply, and never let it be swallowed.
-
-        Editing the live message is preferred, but Telegram rate-limits edits
-        and refuses edits of old messages. Both cases used to drop the answer on
-        the floor, which from the chat looks exactly like the bot stopped
-        mid-job. If the edit does not land, send a fresh message instead.
-        """
-        if watch and message_id:
-            if self.telegram.edit(chat_id, message_id, text, reply_markup=markup, force=True):
-                return
-            log.warning("Final edit failed (rate limit or stale message); sending instead")
-        self.send(chat_id, text, markup)
+        turns.deliver_final(self, chat_id, message_id, text, markup, watch)
 
     def _recover_session(self, chat_id: str, exc: ApiError) -> str:
-        """Recreate a session the server no longer has, and say so.
-
-        Reached when the OpenCode server restarted mid-conversation and lost
-        the session: the prompt came back 404 instead of being queued.
-        """
-        log.warning("Session for chat %s is gone (%s); recreating", chat_id, exc.message)
-        directory = self.state.directory(chat_id)
-        created = self.api.create_session(directory)
-        self.state.set_session(chat_id, created["id"], directory=directory)
-        self.send(
-            chat_id,
-            "The OpenCode server restarted and dropped this session, so I started a "
-            f"fresh one ({created['id']}) and resent your message. Earlier context "
-            "in this chat is gone; /sessions lists anything the server kept.",
-        )
-        return created["id"]
+        return turns.recover_session(self, chat_id, exc)
 
     def _final_text(self, progress: TurnProgress, session: str, submitted_at: int) -> str:
-        text = progress.final_text(self.config.max_output)
-        # Test the agent's text, not the rendered block: an answer that happens
-        # to contain the words "(no reply)" was being thrown away.
-        if progress.text.strip() or "(no reply)" not in text:
-            return text
-        try:
-            messages = self.api.messages(session, limit=10, order="desc")
-        except ApiError:
-            return text
-        fallback = OpenCode.assistant_text(messages, submitted_at)
-        if not fallback:
-            return text
-        # Re-render rather than return the bare fallback, so notes like
-        # "interrupted" and the duration footer survive.
-        progress.set_if_longer(fallback.strip())
-        return progress.final_text(self.config.max_output)
+        return turns.final_text(self, progress, session, submitted_at)
 
     def _check_cost_alert(
         self, chat_id: str, progress: TurnProgress, cost_alerted: dict
     ) -> None:
-        """Catch a turn that finished fast but still crossed the threshold."""
-        threshold = float(self.state.pref(chat_id, "cost_alert", self.config.cost_alert) or 0)
-        if threshold and progress.cost >= threshold and not cost_alerted["fired"]:
-            cost_alerted["fired"] = True
-            self.send(
-                chat_id,
-                f"Cost alert: this session has reached ${progress.cost:.4f} "
-                f"(threshold ${threshold:.2f}).",
-            )
+        turns.check_cost_alert(self, chat_id, progress, cost_alerted)
 
-    # ------------------------------------------------------- permission loop
-
+    # --- watchers ---
     def _schedule_loop(self) -> None:
-        """Submit scheduled prompts through the normal queue.
-
-        Deliberately simple: tick once a minute and hand anything due to the
-        same queue a message would use, so scheduled work streams, can be
-        aborted and asks for permissions exactly like everything else.
-        """
-        while not self.stop_event.wait(SCHEDULE_TICK):
-            try:
-                for schedule in self.schedules.due():
-                    log.info("Schedule %s due for chat %s", schedule.id, schedule.chat_id)
-                    if schedule.chat_id not in self.config.allowed_chats:
-                        continue
-                    self.work.put((schedule.chat_id, schedule.prompt, None))
-                self.state.save_schedules(self.schedules.to_list())
-            except Exception:
-                log.exception("Scheduler tick failed")
+        watchers.schedule_loop(self)
 
     def _permission_loop(self) -> None:
-        """Watch for approval requests.
-
-        The whole body is guarded: this thread also runs attachment pruning,
-        so an unguarded exception here would silently take auto-approval,
-        prompts and disk housekeeping down with it, with no symptom other
-        than the features quietly going missing.
-        """
-        seen: list[str] = []
-        last_prune = 0.0
-        while not self.stop_event.wait(self.config.permission_poll):
-            try:
-                self.health.permissions_alive = True
-
-                now = time.monotonic()
-                if now - last_prune > 3600:
-                    last_prune = now
-                    try:
-                        attachments.prune(
-                            self.config.attachments_dir,
-                            max_age_hours=self.config.attachment_max_age_hours,
-                        )
-                    except Exception:
-                        log.debug("Attachment prune failed", exc_info=True)
-
-                self._prune_seen(seen)
-
-                for chat_id in list(self.state.chats()):
-                    if chat_id not in self.config.allowed_chats:
-                        # Polling a removed chat's directory would surface its
-                        # pending requests - and possibly auto-answer them -
-                        # for a conversation that is no longer allowed.
-                        continue
-                    directory = self.state.directory(chat_id)
-                    try:
-                        requests = self.api.permission_requests(directory=directory)
-                    except ApiError:
-                        continue
-                    except Exception:
-                        # A malformed response must not stop the watcher.
-                        log.exception("Permission poll raised for %s", chat_id)
-                        continue
-
-                    for request in requests or []:
-                        request_id = request.get("id") or ""
-                        if not request_id or request_id in seen:
-                            continue
-
-                        self._requests[request_id] = request
-
-                        decision = self.policy.decide(request, chat_id)
-                        if decision:
-                            self._reply_permission(chat_id, request_id, decision, request)
-                            if request_id not in seen:
-                                seen.append(request_id)
-                            continue
-
-                        # Only mark as seen once the user has actually been
-                        # told; marking first meant a failed send left the
-                        # agent blocked on a request nobody was ever shown.
-                        if self._notify_permission(chat_id, request_id, request):
-                            seen.append(request_id)
-                            del seen[:-MAX_SEEN_PERMISSIONS]
-            except Exception:
-                log.exception("Permission watcher iteration failed")
+        watchers.permission_loop(self)
 
     def _prune_seen(self, seen: list[str]) -> None:
-        """Bound the dedupe list and the request cache."""
-        if len(seen) > MAX_SEEN_PERMISSIONS:
-            del seen[:-MAX_SEEN_PERMISSIONS]
-        # Requests answered outside the bridge are never evicted by
-        # _reply_permission, so bound the cache independently.
-        if len(self._requests) > MAX_CACHED_REQUESTS:
-            for request_id in list(self._requests)[: len(self._requests) // 2]:
-                self._requests.pop(request_id, None)
-        # Card mappings whose request resolved elsewhere (an auto-decision,
-        # a server-side answer) must not keep a dead id on a live message;
-        # the dict is small, so reconciling it here is cheap.
-        for key in list(self._perm_cards):
-            if self._perm_cards[key] not in self._requests:
-                self._perm_cards.pop(key, None)
+        watchers.prune_seen(self, seen)
 
     def _reply_permission(
-        self,
-        chat_id: str,
-        request_id: str,
-        decision: str,
-        request: dict | None = None,
+        self, chat_id: str, request_id: str, decision: str, request: dict | None = None
     ) -> None:
-        request = request or self._find_request(request_id)
-        if not request:
-            # The button still exists in the chat even though the request is
-            # gone; silence here looks like a successful approval.
-            self.send(chat_id, f"! {request_id} is no longer pending.")
-            return
-        try:
-            self.api.reply_permission(request.get("sessionID") or "", request_id, decision)
-        except ApiError as exc:
-            log.warning("Could not answer permission %s: %s", request_id, exc)
-            # Silence here reads as a successful approval: the user reacted,
-            # the card stayed, and the agent stayed blocked while we said
-            # nothing. The request is still pending, so say so.
-            self.send(chat_id, f"! Could not {decision} {request_id}: {exc.message}")
-            return
-
-        self._requests.pop(request_id, None)
-        for key in [k for k, v in self._perm_cards.items() if v == request_id]:
-            self._perm_cards.pop(key, None)
-        verb = {"once": "approved", "always": "always allowed", "reject": "rejected"}[decision]
-        auto = " (auto)" if request.get("_auto") else ""
-        self.send(chat_id, f"Permission {verb}{auto}: {request.get('action', '?')}")
+        watchers.reply_permission(self, chat_id, request_id, decision, request)
 
     def _find_request(self, request_id: str) -> dict | None:
-        """Look up a pending request from the watcher's cache.
-
-        Button presses arrive with only the request id, and resolving it used
-        to mean an API call per allow-listed chat until one matched. The
-        watcher already polls these, so it caches them and this becomes a
-        dict lookup - which also means answering works even if the server has
-        gone away.
-        """
-        return self._requests.get(request_id)
+        return watchers.find_request(self, request_id)
 
     def _notify_permission(self, chat_id: str, request_id: str, request: dict) -> bool:
-        """Ask the user. Returns False if the ask did not get through."""
-        action = request.get("action", "?")
-        resources = ", ".join(request.get("resources") or [])[:200]
-        body = f"Permission needed: {action}\n{resources}\n\n{request_id}"
-        try:
-            message_id = self.telegram.send(
-                chat_id, body, reply_markup=keyboards.permission_buttons(request_id)
-            )
-        except (TelegramError, OSError) as exc:
-            log.warning(
-                "Could not ask about permission %s: %s", request_id, self.telegram.redact(exc)
-            )
-            return False
-        if message_id is None:
-            # Delivered, but Telegram did not identify the message: the card
-            # simply cannot be scoped by reaction. The ask still went
-            # through - retrying would post a duplicate card.
-            log.warning(
-                "Permission %s card has no message id; reactions degrade to chat-wide",
-                request_id,
-            )
-            return True
-        self._perm_cards[(chat_id, message_id)] = request_id
-        log.info("Asked chat %s about permission %s (%s)", chat_id, request_id, message_id)
-        return True
+        return watchers.notify_permission(self, chat_id, request_id, request)
 
 
 def main() -> int:
