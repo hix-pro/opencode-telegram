@@ -376,9 +376,17 @@ def edited(text=None, user=CHAT, chat_id=CHAT, is_bot=False):
     }
 
 
-def test_editing_a_sent_message_resends_it_as_a_prompt(tmp_path):
-    """The chat history doubles as the prompt queue."""
+def test_editing_a_sent_message_is_ignored_by_default(tmp_path):
+    """An accidental edit must not repeat a side effect."""
     bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge._handle_update(edited("make the header red instead"))
+    assert bridge.work.empty()
+    assert bridge.telegram.sent == []
+
+
+def test_editing_a_sent_message_resends_when_enabled(tmp_path):
+    """The chat history doubles as the prompt queue when explicitly enabled."""
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited("make the header red instead"))
     assert bridge.work.get(timeout=1) == (CHAT, "make the header red instead", None)
     assert "Resending" in bridge.telegram.sent[-1]
@@ -386,33 +394,33 @@ def test_editing_a_sent_message_resends_it_as_a_prompt(tmp_path):
 
 def test_edits_without_text_do_nothing(tmp_path):
     """A caption-only edit has no words to resend."""
-    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited(text=None))
     assert bridge.work.empty() and bridge.telegram.sent == []
 
 
 def test_a_slash_command_edit_never_reruns(tmp_path):
     """Commands ran once when sent; re-running on rewording is a surprise."""
-    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited("/new  corrected typo"))
     assert bridge.work.empty() and bridge.telegram.sent == []
 
 
 def test_the_bridge_editing_itself_never_reprompts(tmp_path):
     """Progress-message edits come back as edited_message; ignore them."""
-    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited("make the header red instead", is_bot=True))
     assert bridge.work.empty() and bridge.telegram.sent == []
 
 
 def test_a_strangers_edit_is_ignored(tmp_path):
-    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited("sneaky prompt", user=999999))
     assert bridge.work.empty() and bridge.telegram.sent == []
 
 
 def test_an_edit_from_a_foreign_chat_is_ignored(tmp_path):
-    bridge = build_bridge(tmp_path, FakeTelegram())
+    bridge = build_bridge(tmp_path, FakeTelegram(), edit_resend=True)
     bridge._handle_update(edited("sneaky prompt", chat_id=777777, user=777777))
     assert bridge.work.empty() and bridge.telegram.sent == []
 

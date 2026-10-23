@@ -48,7 +48,7 @@ import requests
 
 from bridgekit import attachments, callbacks, commands, keyboards, turns, updates, watchers
 from bridgekit.api import ApiError, OpenCode
-from bridgekit.config import Config, ConfigError
+from bridgekit.config import Config, ConfigError, env_file_warning
 from bridgekit.events import EventStream
 from bridgekit.policy import Policy
 from bridgekit.progress import TurnProgress
@@ -566,6 +566,10 @@ def main() -> int:
             "ALLOWED_ROOTS is empty: sessions may target any directory on this "
             "machine. Set ALLOWED_ROOTS to confine the bridge."
         )
+
+    env_warning = env_file_warning(Path(__file__).resolve().parent / ".env")
+    if env_warning:
+        log.warning("%s", env_warning)
 
     bridge = Bridge(config)
 

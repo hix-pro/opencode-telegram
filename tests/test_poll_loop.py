@@ -78,7 +78,7 @@ def test_poll_loop_processes_a_mixed_batch(tmp_path):
 
 def test_poll_loop_survives_updates_after_a_batch(tmp_path):
     """Delivering the batch does not end the loop; spent polls do, via stop."""
-    bridge = build_bridge(tmp_path, BatchTelegram([[MSG], [EDIT]]))
+    bridge = build_bridge(tmp_path, BatchTelegram([[MSG], [EDIT]]), edit_resend=True)
     bridge.telegram.stopper = bridge.stop_event
     bridge.poll_loop()
 

@@ -117,7 +117,7 @@ class IdleAPI:
         return {"id": session_id, "title": "t", "time": {}}
 
 
-def build_bridge(tmp_path, telegram):
+def build_bridge(tmp_path, telegram, **overrides):
     import bridge as B
 
     config = Config(
@@ -131,6 +131,7 @@ def build_bridge(tmp_path, telegram):
         edit_interval=0.0,
         stream_enabled=True,
         prompt_timeout=10,
+        **overrides,
     )
     instance = B.Bridge.__new__(B.Bridge)
     instance.config = config

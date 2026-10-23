@@ -124,12 +124,15 @@ def run_turn(bridge, chat_id: str, text: str, files: list | None = None) -> None
     bridge.health.turns += 1
     bridge.health.last_turn_at = time.time()
     bridge.health.prompts += 1
-    log.info(
-        "Prompt for %s (%d chars): %s",
-        chat_id,
-        len(text),
-        text[: bridge.config.log_prompt_chars].replace("\n", " "),
-    )
+    if bridge.config.log_prompt_chars:
+        log.info(
+            "Prompt for %s (%d chars): %s",
+            chat_id,
+            len(text),
+            text[: bridge.config.log_prompt_chars].replace("\n", " "),
+        )
+    else:
+        log.info("Prompt for %s (%d chars); preview disabled", chat_id, len(text))
 
     watch = bool(bridge.state.pref(chat_id, "watch", True) and bridge.config.stream_enabled)
     progress = TurnProgress()

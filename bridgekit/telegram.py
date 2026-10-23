@@ -29,8 +29,8 @@ EDIT_MEMORY_SECONDS = 600.0
 
 # The update types the bridge consumes. message_reaction is not in
 # Telegram's default set, so reactions would silently never arrive
-# without asking for it here; edited_message carries the edit-a-sent-
-# message re-prompt.
+# without asking for it here; edited_message carries the opt-in edit
+# re-prompt.
 ALLOWED_UPDATES = (
     "message",
     "edited_message",
@@ -136,6 +136,7 @@ class Telegram:
 
     def send(self, chat_id: str, text: str, reply_markup: dict | None = None) -> int | None:
         """Send text, splitting it across messages if Telegram would reject it."""
+        text = self.redact(text)
         last_id = None
         for chunk in split_message(text, self.max_chunk):
             last_id = self._send_chunk(chat_id, chunk, reply_markup)
@@ -186,6 +187,7 @@ class Telegram:
         Returns False when the edit was skipped as too frequent or when the new
         text is identical, which are both normal and not worth logging loudly.
         """
+        text = self.redact(text)
         key = f"{chat_id}:{message_id}"
         now = time.monotonic()
         # While the server's named retry_after window is open, do not even

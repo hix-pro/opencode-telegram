@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest tagged release receives security fixes (currently `v2.2.x`).
+Only the latest tagged release receives security fixes (currently `v2.3.x`).
 
 ## Reporting a vulnerability
 

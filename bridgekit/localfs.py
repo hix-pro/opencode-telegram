@@ -20,6 +20,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .pathguard import reason as sensitive_reason
+
 MAX_READ_BYTES = 512 * 1024
 MAX_ENTRIES = 500
 MAX_WALK = 20_000
@@ -45,19 +47,26 @@ def _resolve(base: str, path: str, allowed_roots: tuple = ()) -> Path:
     except (OSError, RuntimeError) as exc:
         raise PathError(f"Could not resolve path: {path}") from exc
 
-    if not allowed_roots:
-        return resolved
+    if allowed_roots:
+        for raw_root in allowed_roots:
+            try:
+                root = Path(raw_root).resolve()
+            except (OSError, RuntimeError):
+                root = Path(raw_root)
+            if resolved == root or root in resolved.parents:
+                break
+        else:
+            raise PathError(
+                f"{resolved} is outside the allowed roots: "
+                + ", ".join(str(r) for r in allowed_roots)
+            )
 
-    for raw_root in allowed_roots:
-        try:
-            root = Path(raw_root).resolve()
-        except (OSError, RuntimeError):
-            root = Path(raw_root)
-        if resolved == root or root in resolved.parents:
-            return resolved
-    raise PathError(
-        f"{resolved} is outside the allowed roots: " + ", ".join(str(r) for r in allowed_roots)
-    )
+    reason = sensitive_reason(resolved)
+    if reason:
+        raise PathError(
+            f"Refusing to access {resolved}: {reason}. Use /sh if you need it deliberately."
+        )
+    return resolved
 
 
 def list_dir(base: str, path: str = ".", allowed_roots: tuple = ()) -> list[Entry]:

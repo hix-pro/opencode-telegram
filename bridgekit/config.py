@@ -10,6 +10,11 @@ Two independent gates protect the machine:
    means unrestricted, which mirrors running ``opencode <directory>`` in a
    terminal by the same user. Set it to confine the bridge.
 
+A small credential/control-plane denylist in :mod:`bridgekit.pathguard` is
+applied even when ``ALLOWED_ROOTS`` is empty: ``/read`` and ``/write`` refuse
+SSH keys, ``.env``, shell startup files, and the bridge's own state. It is
+defence in depth, not a sandbox - ``/sh`` and the agent still run as this user.
+
 The bot token and the server password are read from the environment and are
 never written to the state file or the log.
 """
@@ -21,6 +26,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from .pathguard import reason as sensitive_reason
 
 DEFAULT_URL = "http://127.0.0.1:49374"
 MAX_CHUNK = 4096
@@ -78,6 +85,25 @@ def _bool_env(source: dict, name: str, default: bool) -> bool:
     raise ConfigError(f"{name} must be true or false, got {raw!r}")
 
 
+def env_file_warning(path: Path) -> str | None:
+    """Return a warning when *path* is readable by group or others.
+
+    The installer creates ``.env`` with mode 0600, but an existing file from
+    an older setup can be 0644.  A startup warning is cheap and does not stop
+    the daemon; the operator may have a deliberate ACL.
+    """
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return None
+    if mode & 0o077:
+        return (
+            f"{path} has mode {mode:03o} and is readable by group/others; "
+            f"run: chmod 600 {path}"
+        )
+    return None
+
+
 def _strip_inline_comments(source: dict) -> dict:
     """Drop trailing ``# ...`` comments the way any .env file expects.
 
@@ -126,6 +152,11 @@ class Config:
     # turn; "steer" feeds the running turn and cancels it.
     prompt_delivery: str = "queue"
 
+    # Editing an already-sent message can queue its new text as another
+    # prompt. Off by default: an accidental edit should not run a command a
+    # second time.
+    edit_resend: bool = False
+
     # Permission handling.
     approval_mode: str = "ask"
     auto_deny: bool = True
@@ -137,7 +168,7 @@ class Config:
     cost_alert: float = 0.0
 
     # Characters of a user's message written to the journal. 0 logs none.
-    log_prompt_chars: int = 60
+    log_prompt_chars: int = 0
 
     # A rotating log file alongside the journal, because the journal on this
     # machine is volatile and loses everything on reboot.
@@ -186,9 +217,13 @@ class Config:
         The OpenCode server does **not** confine file operations to the
         session directory - ``/write ../../../etc/foo`` lands outside it, which
         was verified against the live API. So when ALLOWED_ROOTS is set the
-        client has to do the containing, or the flag is decoration. With
-        ALLOWED_ROOTS unset the bridge is unrestricted by design and nothing is
-        blocked.
+        client has to do the containing, or the flag is decoration.
+
+        Credential and control-plane paths are refused even when
+        ALLOWED_ROOTS is unset.  That is a narrow exception to the
+        unrestricted mode: it protects the bridge's own secrets and common
+        keys from an accidental ``/read``, not a determined attacker (who can
+        use ``/sh`` or the agent).
         """
         raw = Path(path).expanduser()
         candidate = raw if raw.is_absolute() else Path(directory) / raw
@@ -197,24 +232,31 @@ class Config:
         except (OSError, RuntimeError) as exc:
             raise ConfigError(f"Could not resolve path: {path}") from exc
 
-        if not self.allowed_roots:
-            return str(resolved)
+        if self.allowed_roots:
+            for raw_root in self.allowed_roots:
+                # Resolve the roots too: comparing a resolved candidate against
+                # an unresolved root refuses legitimate paths whenever the root
+                # path involves a symlink, which is easy to hit by constructing
+                # Config directly rather than through from_env.
+                try:
+                    root = Path(raw_root).resolve()
+                except (OSError, RuntimeError):
+                    root = Path(raw_root)
+                if resolved == root or root in resolved.parents:
+                    break
+            else:
+                raise ConfigError(
+                    f"{resolved} is outside the allowed roots: "
+                    + ", ".join(str(root) for root in self.allowed_roots)
+                )
 
-        for raw_root in self.allowed_roots:
-            # Resolve the roots too: comparing a resolved candidate against an
-            # unresolved root refuses legitimate paths whenever the root path
-            # involves a symlink, which is easy to hit by constructing Config
-            # directly rather than through from_env.
-            try:
-                root = Path(raw_root).resolve()
-            except (OSError, RuntimeError):
-                root = Path(raw_root)
-            if resolved == root or root in resolved.parents:
-                return str(resolved)
-        raise ConfigError(
-            f"{resolved} is outside the allowed roots: "
-            + ", ".join(str(root) for root in self.allowed_roots)
-        )
+        reason = sensitive_reason(resolved)
+        if reason:
+            raise ConfigError(
+                f"Refusing to access {resolved}: {reason}. "
+                "Use /sh if you need it deliberately."
+            )
+        return str(resolved)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> Config:
@@ -284,6 +326,7 @@ class Config:
             prompt_timeout=_int_env(source, "PROMPT_TIMEOUT", 7200),
             heads_up_after=_int_env(source, "HEADS_UP_AFTER", 240),
             prompt_delivery=(source.get("PROMPT_DELIVERY", "").strip().lower() or "queue"),
+            edit_resend=_bool_env(source, "EDIT_RESEND", False),
             permission_poll=_positive_float(source, "PERMISSION_POLL_INTERVAL", 5.0),
             allowed_roots=roots,
             max_output=_int_env(source, "MAX_OUTPUT", 3500),
@@ -297,7 +340,7 @@ class Config:
             auto_deny=_bool_env(source, "AUTO_DENY", True),
             attachment_max_age_hours=_float_env(source, "ATTACHMENT_MAX_AGE_HOURS", 24.0),
             cost_alert=_float_env(source, "COST_ALERT", 0.0),
-            log_prompt_chars=_int_env(source, "LOG_PROMPT_CHARS", 60),
+            log_prompt_chars=_int_env(source, "LOG_PROMPT_CHARS", 0),
             log_file=source.get("LOG_FILE", "").strip()
             or str(Path(__file__).resolve().parent.parent / "bridge.log"),
             log_max_bytes=_int_env(source, "LOG_MAX_BYTES", 2 * 1024 * 1024),

@@ -109,3 +109,30 @@ def test_a_transfer_death_leaves_no_partial_file(tmp_path):
 
     assert not destination.exists(), "a truncated attachment must not survive"
     assert "98765" not in str(caught.value)
+
+
+def test_send_and_edit_redact_the_token_before_the_wire(monkeypatch):
+    """A token that reaches a reply must not reach the chat."""
+    from types import SimpleNamespace
+
+    class Capture:
+        def __init__(self):
+            self.payloads = []
+
+        def post(self, url, json=None, **kwargs):
+            self.payloads.append(json)
+            return SimpleNamespace(
+                status_code=200,
+                text="",
+                json=lambda: {"result": {"message_id": 7}},
+            )
+
+    tg = Telegram("98765")
+    session = Capture()
+    tg._http = session
+
+    tg.send("42", "the token is 98765 and must not leak")
+    assert session.payloads[0]["text"] == "the token is *** and must not leak"
+
+    assert tg.edit("42", 7, "again: 98765", force=True) is True
+    assert session.payloads[1]["text"] == "again: ***"

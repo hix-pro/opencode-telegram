@@ -7,8 +7,8 @@
 > OpenCode server via its local HTTP API.
 
 Full remote control of a local OpenCode server from Telegram: live streaming of
-what the agent is doing, the whole command surface the TUI has, session
-switching, model and agent switching, and permission approvals from your phone.
+what the agent is doing, session switching, model and agent switching, file and
+shell commands, and permission approvals from your phone.
 
 ## How it works
 
@@ -57,8 +57,13 @@ Your numeric id is in `message.chat.id`.
 
 ```bash
 cp .env.example .env
+chmod 600 .env        # it holds a bot token
 $EDITOR .env          # fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 ```
+
+Every setting is documented in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+The bridge warns at startup if an existing `.env` is readable by group or
+others.
 
 **4. Install and run.**
 
@@ -80,8 +85,9 @@ python3 bridge.py
 
 **5. Check it.**
 
-Send `/doctor` to your bot. It reports the server, session, policy, event
-stream, permission watcher and scheduler in one message.
+Send `/start` (or `/help`) for the command list, then `/doctor`. It reports the
+server, session, policy, event stream, permission watcher and scheduler in one
+message.
 
 **No setup needed beyond that:** on start the bridge publishes its command list
 to Telegram, so every `/` you type autocompletes with a description, the
@@ -176,6 +182,30 @@ Macros are global to the bot and saved in `.state.json`; they may not shadow a
 built-in command, and their bodies may not be slash commands. Autocomplete
 stays the curated command list — `/macro` lists what you have recorded.
 
+### Schedules
+
+Run a prompt on a timer. Schedules are per chat, survive restarts, and go
+through the same queue as a typed message, so streaming, permissions and
+`/abort` work normally.
+
+| Command | Effect |
+|---|---|
+| `/schedule` | List this chat's schedules |
+| `/schedule every 30m <prompt>` | Run every 30 minutes |
+| `/schedule every 2h <prompt>` / `/schedule hourly <prompt>` | Run on an hourly interval |
+| `/schedule daily 09:00 <prompt>` | Run at 09:00 local time |
+| `/schedule rm <id>` | Remove one (ids are shown by `/schedule`) |
+
+```
+/schedule every 30m check the build and report failures
+/schedule daily 09:00 summarise yesterday's issues
+```
+
+`daily` matches the local calendar, not a fixed 24-hour countdown. If the
+bridge was down at the scheduled minute, it runs once when the bridge comes
+back that day; a run that already happened is not repeated. Schedules are
+stored in `.state.json` with macros and per-chat preferences.
+
 ### Model and agent
 
 | Command | Effect |
@@ -205,8 +235,10 @@ stays the curated command list — `/macro` lists what you have recorded.
 
 `/ls`, `/read`, `/find` and `/write` work on the local filesystem rather than the
 server's HTTP API, which ignores the requested directory and resolves everything
-against its own working directory. They are scoped to the working directory and
-confined by `ALLOWED_ROOTS`.
+against its own working directory. They are scoped to the working directory,
+confined by `ALLOWED_ROOTS`, and refuse known credential/control paths such as
+`.env`, `.ssh`, `.git`, shell startup files, systemd user units, and the
+bridge's own state and logs. That refusal is an accident guard, not a sandbox.
 
 **`/sh` replies in two messages.** The bridge acks immediately - "Running $ ..."
 - and the output arrives as a second message when it finishes. The dispatcher
@@ -283,11 +315,14 @@ rule above. It can approve one request but never a batch.
 
 ### Editing a sent message
 
-Edit a message you sent (fix a typo, refine the ask) and the new wording is
-resent as a fresh prompt - the chat history doubles as the queue. The
-bridge's own message edits never trigger this, and editing a slash command
-does nothing: it already ran, and re-running one because its wording changed
-is a surprise, not a service.
+By default, editing a message you already sent does nothing. This is
+deliberate: an accidental edit should not queue a second prompt or repeat a
+side effect.
+
+Set `EDIT_RESEND=true` to make the chat history double as the queue: the new
+wording is sent as a fresh prompt. Even then, the bridge's own message edits
+never trigger it, and editing a slash command does nothing: it already ran, and
+re-running one because its wording changed is a surprise, not a service.
 
 ### Help
 
@@ -298,6 +333,7 @@ is a surprise, not a service.
 | `/doctor` | Full self-check: config, server, session, disk, threads |
 | `/selftest` | End-to-end checks against the **live** server |
 | `/help` | Full command list |
+| `/start` | Alias for `/help`; the usual first message from a new chat |
 
 `/selftest` is the one that matters when something looks wrong. The rest of the
 suite runs against a fake API, and a fake will happily accept a wrong content
@@ -421,6 +457,12 @@ This bridge is a remote shell. Treat these as non-negotiable:
   It is user-initiated and does not pass through the approval pipeline, but
   its command is checked against the guard before it starts. Remove a rule
   with `/guard rm` if you need to run something it blocks.
+- **`/read` and `/write` refuse credential paths.** Even when
+  `ALLOWED_ROOTS` is empty, known secrets and control files - `.env`,
+  `.ssh`, `.git`, shell startup files, systemd user units, the bridge's own
+  state and logs - are blocked. This is an accident guard, not a sandbox:
+  `/sh` and the agent still run as the same user. Use the OS boundary in
+  [docs/HARDENING.md](docs/HARDENING.md) for real containment.
 - **`/auto all` is guarded, not sandboxed.** A deny-list of destructive
   commands (`rm -rf`, `mkfs`, `curl | sh`, `sudo`, `git push --force`, ...) is
   force-rejected regardless of the approval mode. `/guard` shows and edits it.
@@ -430,9 +472,14 @@ This bridge is a remote shell. Treat these as non-negotiable:
   `.attachments` beside the state file (owner-only `0700`/`0600`) and pruned
   after `ATTACHMENT_MAX_AGE_HOURS` (24 by default).
 - **Keep secrets in the environment.** Don't hardcode the bot token, and don't
-  paste `.env` into the chat the bot is serving.
-- **Your messages are logged.** The first `LOG_PROMPT_CHARS` characters of each
-  prompt go to the journal for debugging. Set it to `0` to log nothing.
+  paste `.env` into the chat the bot is serving. Keep `.env` at mode `0600`;
+  startup warns if it is group- or world-readable.
+- **Known bot tokens are redacted from replies and logs.** That covers the
+  bridge's own token, not every possible secret an agent might print. Treat
+  chat output as public.
+- **Prompt previews are off by default.** `LOG_PROMPT_CHARS` is `0`, so the
+  journal records the chat id and message length but not the text. Set it to a
+  positive number to log that many leading characters for debugging.
 - **Telegram is not private.** Bot tokens leak through logs, screenshots, and
   compromised devices.
 

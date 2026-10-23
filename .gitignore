@@ -18,6 +18,6 @@ __pycache__/
 .ruff_cache/
 .attachments/
 
-# Local snapshots with credential copies
+# Local backups and snapshots
 .backup/
 backups/

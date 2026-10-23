@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from bridgekit.config import Config, ConfigError
+from bridgekit.config import Config, ConfigError, env_file_warning
 
 
 def base_env(**overrides):
@@ -141,6 +141,40 @@ def test_a_fully_commented_value_is_ignored():
                 "ALLOWED_ROOTS": "# /home/demo",
             }
         )
+
+
+def test_edit_resend_is_opt_in(tmp_path):
+    config = Config.from_env(base_env(PROJECT_DIR=str(tmp_path)))
+    assert config.edit_resend is False
+    assert (
+        Config.from_env(base_env(PROJECT_DIR=str(tmp_path), EDIT_RESEND="true")).edit_resend
+        is True
+    )
+
+
+def test_prompt_previews_are_off_by_default(tmp_path):
+    config = Config.from_env(base_env(PROJECT_DIR=str(tmp_path)))
+    assert config.log_prompt_chars == 0
+    assert (
+        Config.from_env(
+            base_env(PROJECT_DIR=str(tmp_path), LOG_PROMPT_CHARS="40")
+        ).log_prompt_chars
+        == 40
+    )
+
+
+def test_env_file_permission_warning(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("TELEGRAM_BOT_TOKEN=x")
+    path.chmod(0o600)
+    assert env_file_warning(path) is None
+
+    path.chmod(0o644)
+    warning = env_file_warning(path)
+    assert warning is not None
+    assert "chmod 600" in warning
+
+    assert env_file_warning(tmp_path / "missing") is None
 
 
 def test_allowed_roots_tolerate_spaces_after_commas(tmp_path):

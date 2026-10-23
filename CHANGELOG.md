@@ -1,5 +1,43 @@
 # Changelog
 
+## v2.3.3 — 2026-10-23
+
+Security hardening and the documentation gaps from the public review.
+
+### Added
+
+- **Credential-path guard for `/read` and `/write`.** Known secrets and
+  control files (`.env`, `.ssh`, `.git`, cloud credential directories, shell
+  startup files, systemd user units, and the bridge's own state/logs) are
+  refused even when `ALLOWED_ROOTS` is empty. This is an accident guard, not
+  a sandbox; `/sh` and the agent still run as the same user.
+- **Startup warning for an unsafe `.env` mode.** The installer creates `.env`
+  at `0600`, but an older copy at `0644` is now called out with the exact
+  `chmod 600` command.
+- **`docs/CONFIGURATION.md`** documents every environment setting, default,
+  and parsing rule, and README now documents schedules, `/start`, and the
+  configuration reference.
+
+### Changed
+
+- **Editing a sent message is opt-in.** `EDIT_RESEND` defaults to `false`, so
+  an accidental edit no longer queues the new wording as a second prompt.
+  Set `EDIT_RESEND=true` to restore the old behaviour.
+- **The bot token is redacted before outbound `sendMessage` and
+  `editMessageText` calls**, not only in logs and transport errors.
+- **`LOG_PROMPT_CHARS` now defaults to `0`.** The journal records the chat id
+  and message length, but not prompt text, unless an operator opts in.
+- README no longer claims to expose the entire TUI command surface.
+
+### Fixed
+
+- `.env.example` now shows the real `EDIT_INTERVAL` default (`2.0`), accurate
+  state/log paths, and the new `EDIT_RESEND` setting.
+- `SECURITY.md` reported `v2.2.x` as the supported line; it now says `v2.3.x`.
+- Stale comments claimed a chat-wide 👍 approved every pending request; the
+  code has required one request or an explicit batch since v2.3.2.
+- `.gitignore` no longer describes local backups as credential snapshots.
+
 ## v2.3.2 — 2026-10-23
 
 Two safety fixes and documentation cleanup.

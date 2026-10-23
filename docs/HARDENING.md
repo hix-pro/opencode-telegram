@@ -91,6 +91,12 @@ then re-run `bash install.sh --harden-server` so the writable paths are
 re-derived. The bridge's `ALLOWED_ROOTS` check and the unit's
 `ReadWritePaths` then describe the same tree.
 
+Independently of `ALLOWED_ROOTS`, `/read` and `/write` refuse known credential
+and control paths (`.env`, `.ssh`, `.git`, shell startup files, systemd user
+units, and the bridge's own state/logs). This is an application-level accident
+guard; `/sh` and the agent still run as the same user, so only the OS boundary
+below protects those files from a determined caller.
+
 The server additionally gets its own state directories
 (`~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`,
 `~/.cache/opencode`, `~/.npm`) plus shared `/tmp` and `/var/tmp` for builds

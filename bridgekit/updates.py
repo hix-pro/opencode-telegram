@@ -19,9 +19,9 @@ from .telegram import TelegramError
 
 log = logging.getLogger("bridge.updates")
 
-# Reactions that steer the bridge without typing. Approve answers every
-# pending permission request for the chat once; stop interrupts the running
-# turn. Only a newly *added* reaction acts.
+# Reactions that steer the bridge without typing. Approve answers one pending
+# permission request (or an explicit card); a batch needs /yes all. Stop
+# interrupts the running turn. Only a newly *added* reaction acts.
 APPROVE_REACTIONS = frozenset({"👍"})
 STOP_REACTIONS = frozenset({"👎", "🛑"})
 
@@ -122,17 +122,21 @@ def handle_callback(bridge, query: dict) -> None:
 
 
 def handle_edited_message(bridge, chat_id: str, message: dict) -> None:
-    """Editing a sent message resends its text as a fresh prompt.
+    """Optionally resend an edited message as a fresh prompt.
 
-    The chat history doubles as the queue: correct a typo, refine an
-    ask, and the new wording becomes a new turn without retyping.
-    The bridge's own edits never count - those are progress updates -
-    and slash commands are ignored, because they already ran when
-    first sent and re-running one because its wording changed is more
-    surprise than service.
+    This is opt-in (``EDIT_RESEND=true``).  Editing a message is easy to do
+    by accident, and re-running a prompt because its wording changed can
+    repeat a side effect.  The chat history still doubles as the queue when
+    the feature is enabled.
+
+    The bridge's own edits never count - those are progress updates - and
+    slash commands are ignored either way, because they already ran when
+    first sent.
     """
     sender = message.get("from") or {}
     if sender.get("is_bot"):
+        return
+    if not bridge.config.edit_resend:
         return
     text = keyboards.from_menu((message.get("text") or "").strip())
     if not text or text.startswith("/"):
