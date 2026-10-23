@@ -506,13 +506,25 @@ class Bridge:
 
             self.health.last_poll_at = time.time()
             for update in updates:
-                offset = update["update_id"] + 1
-                self._handle_update(update)
+                if not isinstance(update, dict):
+                    log.warning("Ignoring malformed update: %r", update)
+                    continue
+                update_id = update.get("update_id")
+                if not isinstance(update_id, int):
+                    log.warning("Ignoring update without a valid id: %r", update)
+                    continue
+                offset = update_id + 1
+                try:
+                    self._handle_update(update)
+                except Exception:
+                    # A single malformed update must not kill the poll thread.
+                    # Log it and advance the offset, or Telegram redelivers the
+                    # same poison update on every restart.
+                    log.exception("Update %s failed; skipping it", update_id)
                 # Per update, not per batch: a crash mid-batch used to forfeit
                 # the acknowledged position of every update already handled in
                 # it, so those were replayed as duplicate turns on restart.
-                if updates:
-                    self.state.save_offset(offset)
+                self.state.save_offset(offset)
 
     def _handle_update(self, update: dict) -> None:
         if "callback_query" in update:
@@ -529,6 +541,12 @@ class Bridge:
         chat_id = str((message.get("chat") or {}).get("id", ""))
         if chat_id not in self.config.allowed_chats:
             # Not on the allow-list: ignore completely, no error, no hint.
+            return
+        # The chat alone is not enough in a group: any member could otherwise
+        # send prompts, /sh or attachments. Require the sender too, matching
+        # edits, reactions and buttons. In a private chat both ids are equal.
+        sender = str((message.get("from") or {}).get("id", "") or chat_id)
+        if sender not in self.config.allowed_chats:
             return
 
         if "message" not in update:

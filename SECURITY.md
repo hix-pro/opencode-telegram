@@ -43,8 +43,9 @@ command the bridge can do anything the account running it can do.
 
 - *Telegram → bridge.* Everything arriving from Telegram is untrusted input.
   The `TELEGRAM_CHAT_ID` allow-list is the gate; updates from other chats are
-  dropped silently. Reactions and inline buttons additionally require the
-  sender to be allow-listed, so a group chat id does not trust its members.
+  dropped silently. Every update also requires the sender to be allow-listed,
+  so a group chat id does not trust its members: list the group and each
+  authorized user.
 - *Bot token and OpenCode password.* Both are root credentials for this tool.
   A leaked token plus a known chat id is remote code execution. They are read
   from the environment and never written to state or logs.
@@ -64,7 +65,7 @@ reach.
 Every inbound update follows the same rule: drop it unless the chat id is in
 `TELEGRAM_CHAT_ID`.
 
-- messages and edited messages: chat id, plus sender for edits
+- messages and edited messages: chat id and sender
 - reactions: chat id and reacting user
 - inline buttons: chat id and pressing user (added in v2.2.4; earlier releases
   checked only the chat)
@@ -105,5 +106,10 @@ Recommended for any machine holding real code or credentials:
 - **A compromised Telegram account is game over.** The bridge cannot tell you
   from someone using your session; enable Telegram 2FA and review active
   devices.
+- **Path checks are check-then-use.** The bridge resolves and validates a
+  path, then the OpenCode server performs the operation. A local process that
+  can swap a symlink between those two steps is outside the application
+  boundary. Keep `ALLOWED_ROOTS` in trees untrusted processes cannot write,
+  or isolate the bridge.
 - **Live integration tests are opt-in.** `pytest -m live` needs a real
   OpenCode server; CI runs the hermetic suite only.

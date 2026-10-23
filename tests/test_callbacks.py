@@ -362,6 +362,26 @@ def test_a_stranger_in_an_allowed_chat_cannot_press_buttons(bridge):
         busy.set()
 
 
+def test_a_stranger_in_an_allowed_chat_cannot_approve_permissions(bridge):
+    """Approving is the highest-impact button: it grants the agent a command."""
+    request = with_permission(bridge)
+    bridge._reply_permission = lambda chat, rid, decision, req=None: bridge.api.replies.append(
+        {"id": rid, "decision": decision}
+    )
+
+    bridge._handle_callback(
+        {
+            "id": "cb1",
+            "data": keyboards.encode("perm_yes", request["id"]),
+            "from": {"id": "99"},
+            "message": {"chat": {"id": CHAT}},
+        }
+    )
+
+    assert bridge.api.replies == []
+    assert bridge.telegram.answered == []
+
+
 def test_unknown_button_data_is_ignored(bridge):
     press(bridge, "something_malicious:payload")
     assert bridge.api.replies == []

@@ -406,9 +406,9 @@ This bridge is a remote shell. Treat these as non-negotiable:
 
 - **`TELEGRAM_CHAT_ID` is mandatory.** The bridge refuses to start without it.
   Without the allow-list, anyone who finds your bot token gets code execution.
-  Every update type is checked: messages, edits, reactions and inline buttons.
-  Reactions and buttons also require the sender to be on the list, so
-  allow-listing a group does not trust every member.
+  Every update type is checked: the chat *and* the sender must be on the
+  allow-list. In a private chat both are the same id; to use a group, list the
+  group id and each authorized user id — being a member is not enough.
 - **`ALLOWED_ROOTS` is optional but recommended.** Empty means sessions may
   target any directory on the machine, mirroring your terminal; the bridge
   warns about that at startup and during install. Set it to confine the

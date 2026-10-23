@@ -12,7 +12,6 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-import pytest
 import requests
 from test_delivery import CHAT, FakeTelegram, build_bridge
 
@@ -100,6 +99,37 @@ def test_poll_loop_resumes_from_the_saved_offset(tmp_path):
     assert bridge.telegram.offsets[0] == 500
 
 
+def test_one_malformed_update_does_not_kill_the_poll_loop(tmp_path):
+    """Telegram is well-formed until it is not. Bad shapes are logged and
+    skipped; the next real update still runs and the offset moves past them,
+    or a poison update would be redelivered on every restart."""
+    good = {
+        "update_id": 104,
+        "message": {
+            "chat": {"id": int(CHAT)},
+            "from": {"id": int(CHAT)},
+            "text": "still alive",
+        },
+    }
+    batch = [
+        "not-a-dict",
+        {"no": "id"},
+        {"update_id": 100, "callback_query": "not-a-dict"},
+        {"update_id": 101, "message": "not-a-dict"},
+        {"update_id": 102, "message_reaction": ["not-a-dict"]},
+        {"update_id": 103, "message": {"chat": "not-a-dict"}},
+        good,
+    ]
+    bridge = build_bridge(tmp_path, BatchTelegram([batch]))
+    bridge.telegram.stopper = bridge.stop_event
+
+    bridge.poll_loop()
+
+    _chat_id, text, _files = bridge.work.get(timeout=1)
+    assert text == "still alive"
+    assert bridge.state.load_offset() == 105
+
+
 class WobbleTelegram(FakeTelegram):
     """Raises HTTP errors before serving batches, like a Telegram outage."""
 
@@ -155,8 +185,11 @@ def test_a_rejected_token_is_still_fatal(tmp_path):
 
 def test_a_mid_batch_crash_keeps_every_acked_update(tmp_path, monkeypatch):
     """The offset used to be saved once per batch: a crash between two
-    updates of one batch replayed the earlier ones as duplicate turns."""
+    updates of one batch replayed the earlier ones as duplicate turns. A
+    failing update is now logged and skipped, so the loop survives and the
+    offset still advances past it instead of replaying it forever."""
     bridge = build_bridge(tmp_path, BatchTelegram([[MSG, NEUTRAL_REACTION]]))
+    bridge.telegram.stopper = bridge.stop_event
 
     calls = {"n": 0}
     real_handler = bridge._handle_update
@@ -168,10 +201,10 @@ def test_a_mid_batch_crash_keeps_every_acked_update(tmp_path, monkeypatch):
         return real_handler(update)
 
     bridge._handle_update = dying_handler
-    with pytest.raises(RuntimeError):
-        bridge.poll_loop()
+    bridge.poll_loop()
 
-    assert bridge.state.load_offset() == 2, "the message already handled must stay acked"
+    assert calls["n"] == 1
+    assert bridge.state.load_offset() == 3, "the failed update is skipped, not replayed"
 
 
 def test_every_poll_iteration_stamps_the_heartbeat(tmp_path):

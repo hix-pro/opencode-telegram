@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.2.5 — 2026-10-23
+
+Uniform authorization and poll-loop resilience, prompted by a follow-up
+security review. The threat model, hardening checklist and remaining limits
+are in [SECURITY.md](SECURITY.md).
+
+### Fixed
+
+- **Messages trusted the chat, not the sender.** Any member of an
+  allow-listed group could send prompts, run `/sh` or upload attachments.
+  Every message now requires both the chat and the sender on the allow-list,
+  matching edits, reactions and inline buttons. Private chats are unaffected;
+  groups must list the group and each authorized user.
+- **One malformed update could kill polling.** Dispatch is guarded per update:
+  the failure is logged and the offset advances, so a poison update is not
+  redelivered on every restart. Non-dict updates and updates without a valid
+  id are skipped.
+- **Check-then-use is now documented.** Application path confinement cannot
+  stop a local process from swapping a symlink between validation and the
+  server's file operation; `SECURITY.md` says so and recommends isolation.
+
+### Added
+
+- Authorization-matrix tests through the real dispatcher: an unlisted sender
+  cannot send prompts, upload attachments, approve permissions or steer
+  reactions, while an allow-listed sender in a listed group still works.
+- Symlink-parent and symlink-loop tests for path confinement.
+
 ## v2.2.4 — 2026-10-23
 
 Hardening from an external security review: the application-level controls now

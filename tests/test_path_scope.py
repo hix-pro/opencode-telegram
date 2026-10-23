@@ -68,6 +68,45 @@ def test_a_symlinked_file_cannot_escape_the_roots(tmp_path):
         localfs.read_file(str(root), "leak", config.allowed_roots)
 
 
+def test_a_new_file_under_a_symlinked_dir_cannot_escape(tmp_path):
+    """The target does not exist yet, so resolve() must still inspect its
+    parent: a symlinked directory is a write escape, not just a read one."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "escape").symlink_to(outside)
+    config = scoped(tmp_path, [root])
+
+    with pytest.raises(ConfigError, match="outside the allowed roots"):
+        config.check_path(str(root), "escape/new.txt")
+
+
+def test_write_through_a_symlinked_file_cannot_escape(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "target.txt"
+    target.write_text("original")
+    (root / "link").symlink_to(target)
+    config = scoped(tmp_path, [root])
+
+    with pytest.raises(PathError, match="outside the allowed roots"):
+        localfs.write_file(str(root), "link", "overwritten", config.allowed_roots)
+    assert target.read_text() == "original"
+
+
+def test_a_symlink_loop_is_refused_not_followed(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "loop").symlink_to(root / "loop")
+    config = scoped(tmp_path, [root])
+
+    with pytest.raises(ConfigError):
+        config.resolve_dir(str(root / "loop"))
+
+
 def test_traversal_out_of_the_root_is_refused(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
