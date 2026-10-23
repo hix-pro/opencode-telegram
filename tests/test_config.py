@@ -111,6 +111,9 @@ def test_inline_comment_is_stripped_from_a_number():
         {
             "TELEGRAM_BOT_TOKEN": "123:abc",
             "TELEGRAM_CHAT_ID": "42",
+            # Explicit: without it the loader falls back to the machine's
+            # ~/.config/opencode/service.json, which a CI runner does not have.
+            "OPENCODE_PASSWORD": "secret",
             "PROMPT_TIMEOUT": "7200     # hard cap on one turn (2h)",
         }
     )

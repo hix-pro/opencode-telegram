@@ -79,6 +79,9 @@ def test_example_values_are_accepted():
     base = {
         "TELEGRAM_BOT_TOKEN": "123:abc",
         "TELEGRAM_CHAT_ID": "42",
+        # Explicit password: the loader otherwise falls back to the machine's
+        # ~/.config/opencode/service.json, absent on a clean CI runner.
+        "OPENCODE_PASSWORD": "secret",
     }
     for name, value in documented_pairs().items():
         Config.from_env({**base, name: value})
