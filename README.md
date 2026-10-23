@@ -1,5 +1,7 @@
 # OpenCode Telegram bridge
 
+[![CI](https://github.com/hix-pro/opencode-telegram/actions/workflows/ci.yml/badge.svg)](https://github.com/hix-pro/opencode-telegram/actions/workflows/ci.yml)
+
 > This project is not built by the OpenCode team and is not affiliated with
 > them in any way. It is an independent community tool that talks to the
 > OpenCode server via its local HTTP API.
