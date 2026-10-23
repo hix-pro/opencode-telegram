@@ -147,8 +147,9 @@ def handle_edited_message(bridge, chat_id: str, message: dict) -> None:
 def handle_reaction(bridge, reaction: dict) -> None:
     """A reaction carries the two actions people reach for fastest.
 
-    Approve answers every pending permission request; stop interrupts
-    the running turn. Telegram only delivers these updates because
+    Approve answers one pending permission request; a batch requires an
+    explicit ``/yes all`` or a reaction on each card. Stop interrupts the
+    running turn. Telegram only delivers these updates because
     :data:`telegram.ALLOWED_UPDATES` includes ``message_reaction``.
     Only allow-listed people in allow-listed chats count, and only a
     newly added reaction acts - removing one must never repeat an
@@ -190,13 +191,19 @@ def handle_reaction(bridge, reaction: dict) -> None:
         return
 
     if approve:
-        bridge._approve_all_pending(chat_id)
+        bridge._approve_pending(chat_id)
     if stop:
         bridge._stop_turn(chat_id)
 
 
-def approve_all_pending(bridge, chat_id: str) -> None:
-    """Approve everything pending in this chat's directory, once each."""
+def approve_pending(bridge, chat_id: str) -> None:
+    """Approve one pending request from a chat-wide reaction.
+
+    A reaction is a single gesture with no confirmation step, and the card
+    mapping is lost across a restart. Approving a batch from a stray thumbs-up
+    therefore approved more than the person meant. More than one request now
+    requires an explicit ``/yes all`` or a reaction on the card itself.
+    """
     try:
         pending = bridge.api.permission_requests(directory=bridge.state.directory(chat_id))
     except ApiError as exc:
@@ -207,8 +214,15 @@ def approve_all_pending(bridge, chat_id: str) -> None:
     if not targets:
         bridge.send(chat_id, "Nothing waiting for approval.")
         return
-    for request in targets:
-        bridge._reply_permission(chat_id, str(request["id"]), "once", request)
+    if len(targets) > 1:
+        bridge.send(
+            chat_id,
+            f"{len(targets)} permission requests are pending. "
+            "React on a card, or use /yes all to approve them explicitly.",
+        )
+        return
+    request = targets[0]
+    bridge._reply_permission(chat_id, str(request["id"]), "once", request)
 
 
 def stop_turn(bridge, chat_id: str) -> None:

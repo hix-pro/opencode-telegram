@@ -99,8 +99,9 @@ tail -f bridge.log                     # survives reboots
 journalctl --user-unit=opencode-telegram-bridge -f --no-pager
 ```
 
-Two logs are kept. `bridge.log` rotates at 2 MB and keeps three backups; it
-survives a reboot, which the journal on this machine does not.
+Two logs are kept. `bridge.log` rotates at 2 MB and keeps three backups.
+Journal retention depends on your systemd/journald configuration; the rotating
+file is the persistent copy.
 
 To remove the service: `./uninstall.sh` (add `--purge` to delete credentials and
 state as well, `--purge-server` to take down OpenCode itself).
@@ -197,6 +198,9 @@ stays the curated command list — `/macro` lists what you have recorded.
 | `/find <query>` | Search for files by name, scoped to the working directory |
 | `/read <path>` | Print a file |
 | `/write <path>` + lines below | Write a file |
+| `/git` | Working tree status |
+| `/diff` | Diff for this directory |
+| `/worktrees` | Git worktrees |
 | `/sh <command>` | Run a shell command (see the limit below) |
 
 `/ls`, `/read`, `/find` and `/write` work on the local filesystem rather than the
@@ -211,9 +215,6 @@ while it runs. The OpenCode server still reaps a shell roughly a second after
 it starts, so only commands that finish immediately return output. For
 anything longer, send it as a message: the agent runs commands itself with no
 such limit and streams the output as it goes.
-| `/git` | Working tree status |
-| `/diff` | Diff for this directory |
-| `/worktrees` | Git worktrees |
 
 ### Policy and guard rails
 
@@ -222,7 +223,7 @@ such limit and streams the output as it goes.
 | `/auto [ask\|read\|all]` | Auto-approval mode |
 | `/policy [allow\|ask\|always\|deny <action>]` | Per-action auto-approval |
 | `/policy clear <action>` / `/policy reset` | Remove one rule / all rules |
-| `/guard` | Show denied command patterns |
+| `/guard` | Show denied patterns (applied to model and `/sh` commands) |
 | `/guard add <regex>` | Deny a new pattern |
 | `/guard rm <regex>` | Remove one |
 | `/guard test <cmd>` | Would this be blocked? (runs nothing) |
@@ -264,7 +265,7 @@ message in the chat:
 
 | Reaction | Effect |
 |---|---|
-| 👍 | Approve **every** pending permission request (once each) |
+| 👍 | Approve the only pending request; with several, point at `/yes all` |
 | 👎 or 🛑 | Abort the running turn |
 
 Only allow-listed people in allow-listed chats count, so a shared chat is not
@@ -272,13 +273,13 @@ opened to whoever finds the bot. Only a newly *added* reaction acts: removing
 an emoji never repeats anything, and any other emoji is ignored.
 
 Reacting **on a pending permission card** is scoped to that card: 👍 approves
-*just that request*, 👎/🛑 rejects it. On any other message the reactions keep
-their chat-wide meaning above.
+*just that request*, 👎/🛑 rejects it. On any other message, 👍 approves only
+when exactly one request is pending. If several are pending, it reports the
+count and changes nothing; use a card or `/yes all` to approve a batch.
 
 The mapping from a card to its request lives in memory, so after a bridge
-restart a reaction on a card delivered *earlier* degrades to the chat-wide
-meaning: the worst case is 👍 approving everything pending in the chat, never
-a card that no longer exists.
+restart a reaction on a card delivered *earlier* degrades to the single-request
+rule above. It can approve one request but never a batch.
 
 ### Editing a sent message
 
@@ -417,7 +418,9 @@ This bridge is a remote shell. Treat these as non-negotiable:
   bridge. It is enforced client-side on every file command, including
   symlinks; the server confines none of them.
 - **`/sh` runs arbitrary commands.** Same blast radius as your own account.
-  It is user-initiated and does not pass through the approval pipeline.
+  It is user-initiated and does not pass through the approval pipeline, but
+  its command is checked against the guard before it starts. Remove a rule
+  with `/guard rm` if you need to run something it blocks.
 - **`/auto all` is guarded, not sandboxed.** A deny-list of destructive
   commands (`rm -rf`, `mkfs`, `curl | sh`, `sudo`, `git push --force`, ...) is
   force-rejected regardless of the approval mode. `/guard` shows and edits it.
@@ -479,7 +482,11 @@ Layout:
 
 | File | Role |
 |---|---|
-| `bridge.py` | Entry point: threads, polling, dispatch, turn pumping |
+| `bridge.py` | Entry point: lifecycle, polling, health, and `main()` |
+| `bridgekit/updates.py` | Update ingress, authorization, reactions, attachments |
+| `bridgekit/callbacks.py` | Inline-button callback registration |
+| `bridgekit/turns.py` | Turn worker, streaming, recovery, and delivery |
+| `bridgekit/watchers.py` | Permission watcher and scheduler |
 | `bridgekit/config.py` | Environment loading, directory scoping |
 | `bridgekit/state.py` | Per-chat session persistence and preferences |
 | `bridgekit/api.py` | OpenCode HTTP client |
@@ -495,19 +502,23 @@ Layout:
 | `install.sh`, `uninstall.sh` | Install or remove the service |
 | `tests/test_live.py` | Opt-in contract checks against a real server |
 | `bridgekit/telegram.py` | Bot API client, chunking, edit throttling |
-| `bridgekit/commands.py` | Command registry and handlers |
+| `bridgekit/commands.py` | Command registry, context, dispatcher, help |
+| `bridgekit/command_handlers/` | Command implementations grouped by concern |
 | `bridgekit/formatting.py` | Render helpers |
 | `bridgekit/schedule.py` | Recurring schedules |
 | `bridgekit/selftest.py` | End-to-end checks behind `/selftest` |
 
-Legacy snapshots (credential copies included) live outside the repository at
-`~/backups/legacy-bridge-snapshots/`, where a `git clean` cannot touch them.
+Keep backups of state and local configuration outside the repository, and make
+sure they are not group- or world-readable.
 
-Adding a command is one decorated function in `commands.py`:
+Adding a command is one decorated function in the relevant
+`bridgekit/command_handlers/` module:
 
 ```python
-@command("ping", "Check the server", group="Help")
-def cmd_ping(ctx: Context) -> str:
+from .. import commands as core
+
+@core.command("ping", "Check the server", group="Help")
+def cmd_ping(ctx: core.Context) -> str:
     return ctx.api.info().get("version", "?")
 ```
 

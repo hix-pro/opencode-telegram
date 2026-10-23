@@ -77,15 +77,18 @@ def test_stop_reaction_on_a_card_rejects_it(tmp_path):
     assert bridge._perm_cards == {}
 
 
-def test_a_reaction_off_the_card_still_means_yes_to_all(tmp_path):
+def test_a_reaction_off_the_card_will_not_approve_a_batch(tmp_path):
+    """One gesture must not answer a queue, especially after a restart."""
     bridge = build_bridge(tmp_path, FakeTelegram())
     bridge.api = FakeAPI(permissions=[dict(PERM_1), dict(PERM_2)])
     bridge._perm_cards[(CHAT, 5)] = "perm_1"
 
     bridge._handle_update(reaction(message_id=99))
 
-    assert bridge.api.permissions == [], "both requests approved"
-    assert bridge._perm_cards == {}, "nothing is pending, so no card remains"
+    assert len(bridge.api.permissions) == 2, "nothing was approved"
+    assert (CHAT, 5) in bridge._perm_cards, "the card mapping is untouched"
+    assert "2 permission requests" in bridge.telegram.sent[-1]
+    assert "/yes all" in bridge.telegram.sent[-1]
 
 
 def test_card_mappings_resolve_with_their_requests(tmp_path):
@@ -99,23 +102,18 @@ def test_card_mappings_resolve_with_their_requests(tmp_path):
     assert bridge._perm_cards == {(CHAT, 1): "perm_9"}
 
 
-def test_thumbs_up_approves_every_pending_request(tmp_path):
-    """The fastest 'yes to all' a phone can give."""
+def test_thumbs_up_approves_a_single_pending_request(tmp_path):
+    """The fast path still works when there is nothing to disambiguate."""
     bridge = build_bridge(tmp_path, FakeTelegram())
-    bridge.api = FakeAPI(
-        permissions=[
-            {"id": "perm_1", "sessionID": "ses_x", "action": "bash", "resources": ["ls"]},
-            {"id": "perm_2", "sessionID": "ses_x", "action": "edit", "resources": []},
-        ]
-    )
+    bridge.api = FakeAPI(permissions=[dict(PERM_1)])
     bridge._requests = {}
     bridge._handle_update(reaction())
 
     approvals = [c for c in bridge.api.calls if c[0] == "reply_permission"]
-    assert len(approvals) == 2
-    assert {c[1][1] for c in approvals} == {"perm_1", "perm_2"}
-    assert all(c[1][2] == "once" for c in approvals)
-    assert bridge.api.permissions == [], "no request left pending"
+    assert len(approvals) == 1
+    assert approvals[0][1][1] == "perm_1"
+    assert approvals[0][1][2] == "once"
+    assert bridge.api.permissions == [], "the request was answered"
     assert any("approved" in m for m in bridge.telegram.sent)
 
 

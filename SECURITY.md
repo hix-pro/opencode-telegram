@@ -71,8 +71,10 @@ Every inbound update follows the same rule: drop it unless the chat id is in
   checked only the chat)
 - anything else: ignored
 
-`/sh` is user-initiated and runs directly; it does not pass through the
-approval policy. The command guard applies to commands the model asks to run.
+`/sh` is user-initiated and does not pass through the approval policy. Its
+command is checked against the guard before execution; the guard prevents
+accidents, not a determined attack. Remove a rule with `/guard rm` when a
+blocked command is intentional.
 
 ## Hardened configuration
 

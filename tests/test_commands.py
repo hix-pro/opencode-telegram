@@ -269,6 +269,12 @@ def test_sh_requires_a_command(ctx):
         run(ctx, "/sh")
 
 
+def test_sh_applies_the_command_guard(ctx):
+    with pytest.raises(CommandError, match="command guard"):
+        run(ctx, "/sh rm -rf /tmp/anything")
+    assert not any(call[0] == "run_shell" for call in ctx.api.calls)
+
+
 def test_dir_switches_and_reports_scope(ctx, workdir):
     run(ctx, f"/dir {workdir}")
     assert ctx.state.directory("42") == str(workdir.resolve())

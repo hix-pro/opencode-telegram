@@ -116,6 +116,12 @@ def cmd_sh(ctx: core.Context) -> str:
     """
     if not ctx.args:
         raise core.CommandError("Usage: /sh <command>")
+    blocked = ctx.policy.blocked_command(ctx.args)
+    if blocked:
+        raise core.CommandError(
+            f"Blocked by the command guard: {blocked}\n"
+            "If this is intentional, remove the rule with /guard rm."
+        )
     if ctx.respond is not None:
         return _sh_async(ctx)
     return _sh_blocking(ctx)

@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.3.2 — 2026-10-23
+
+Two safety fixes and documentation cleanup.
+
+### Changed
+
+- A chat-wide 👍 now approves a permission request only when exactly one is
+  pending. With several pending it reports the count and changes nothing;
+  use a card reaction or `/yes all` to approve a batch. Card-scoped reactions
+  and `/yes all` are unchanged. This also removes the post-restart case where
+  a stray 👍 could approve every pending request.
+- `/sh` now checks the command guard before starting. A blocked command is
+  refused with the matching rule and never reaches the server; remove a rule
+  with `/guard rm` when the command is intentional.
+
+### Fixed
+
+- README command tables: `/git`, `/diff` and `/worktrees` are back in the
+  Files and code table.
+- README deployment notes no longer contain machine-specific journal or
+  backup-path references.
+
 ## v2.3.1 — 2026-10-23
 
 Internal refactor. No user-visible behavior, configuration, or wire-format

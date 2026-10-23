@@ -434,8 +434,8 @@ class Bridge:
     def _handle_reaction(self, reaction: dict) -> None:
         updates.handle_reaction(self, reaction)
 
-    def _approve_all_pending(self, chat_id: str) -> None:
-        updates.approve_all_pending(self, chat_id)
+    def _approve_pending(self, chat_id: str) -> None:
+        updates.approve_pending(self, chat_id)
 
     def _stop_turn(self, chat_id: str) -> None:
         updates.stop_turn(self, chat_id)
