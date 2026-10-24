@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.3.8 — 2026-10-24
+
+Identity, not only permissions: the migration tool for running the whole
+deployment (bridge, watchdog and OpenCode server) under a dedicated OS
+user closes the one boundary a systemd sandbox cannot move - reading.
+
+### Added
+
+- **`scripts/migrate-dedicated-user.sh`** does the mechanical migration
+  with a `--check` dry-run mode: creates the user, copies the checkout
+  (state, logs, attachments, `.env` re-secured to 600), copies the
+  OpenCode server's data trees (sessions and auth carry over), enables
+  linger, re-renders both sandboxed units as the new user, verifies
+  health, and only then stops the originals - which stay defined, so
+  rollback is a start command. The script refuses to run destructive
+  steps and never deletes anything.
+- `docs/HARDENING.md` gains the "Running under a dedicated user" runbook:
+  what it buys, the per-step commands, post-migration differences (logs,
+  upgrades, backup unit, client state) and rollback.
+- The CI syntax/shell gates cover the new script.
+
+### Notes
+
+- The reference deployment narrowed `ALLOWED_ROOTS` from `$HOME` to the
+  project tree at the same time (operator choice, not a repo change):
+  the server's writable set no longer includes the home tree, so SSH
+  keys, browser data and other token files are write-protected for the
+  units. Root choices remain the operator's.
+
 ## v2.3.7 — 2026-10-24
 
 A security scan flagged the bridge service as running without an OS

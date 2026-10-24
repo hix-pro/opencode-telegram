@@ -497,9 +497,9 @@ application-level controls, see [SECURITY.md](SECURITY.md). The units can be
 sandboxed as well: `bash install.sh --harden-bridge --harden-server` renders
 the OS-level boundaries described in
 [docs/HARDENING.md](docs/HARDENING.md) — the bridge one (token-holding
-process) applies with any configuration. For anything reachable from
-Telegram, run the bridge as a dedicated OS user or in a container/VM with
-only the files and credentials it needs.
+process) applies with any configuration. The strongest boundary is identity:
+[docs/HARDENING.md](docs/HARDENING.md) carries a migration under a dedicated
+OS user (`scripts/migrate-dedicated-user.sh`).
 
 ## Requirements
 
