@@ -491,28 +491,46 @@ def _repo_text(name: str) -> str:
     return _REPO.joinpath(name).read_text()
 
 
-def test_the_bridge_hardening_template_carries_the_sandbox_profile() -> None:
-    template = _repo_text("systemd/opencode-telegram-bridge-hardening.conf.in")
+def test_the_base_bridge_unit_carries_the_process_sandbox() -> None:
+    """Kernel surfaces, capabilities and the syscall/socket whitelist must
+    live in the base unit so every install gets them without flags."""
+    unit = _repo_text("systemd/opencode-telegram-bridge.service.in")
     for directive in (
         "NoNewPrivileges=yes",
-        "ProtectSystem=strict",
-        "ProtectHome=read-only",
-        "@RW_PATHS@",
+        "PrivateTmp=yes",
+        "ProtectKernelTunables=yes",
+        "ProtectKernelModules=yes",
+        "ProtectClock=yes",
+        "RestrictSUIDSGID=yes",
+        "RestrictRealtime=yes",
+        "LockPersonality=yes",
         "CapabilityBoundingSet=",
-        "SystemCallFilter=@system-service",
+        "AmbientCapabilities=",
         "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+        "SystemCallArchitectures=native",
+        "SystemCallFilter=@system-service",
+        "SystemCallErrorNumber=EPERM",
     ):
-        assert directive in template, f"missing sandbox directive: {directive}"
+        assert directive in unit, f"missing process sandbox directive: {directive}"
+    # The conditional @SANDBOX@ rendering is gone for good: filesystem
+    # bindings belong to the drop-in only, or empty-roots installs would
+    # silently lose ProtectSystem and roots silently land in the bridge.
+    assert "@SANDBOX@" not in unit
 
 
-def test_the_bridge_sandbox_never_grants_the_project_roots() -> None:
-    """The bridge never writes into ALLOWED_ROOTS - only its repo dir and
-    /tmp are writable here. If the template ever named the roots again, a
-    reconnect would silently widen the sandbox of a token-holding process."""
+def test_the_bridge_drop_in_is_the_filesystem_delta_only() -> None:
     template = _repo_text("systemd/opencode-telegram-bridge-hardening.conf.in")
+    for directive in ("ProtectSystem=strict", "ProtectHome=read-only", "@RW_PATHS@"):
+        assert directive in template, f"missing filesystem directive: {directive}"
+    # Single-source doctrine: the process-level directives stay in the base
+    # unit; a drop-in copy would only shadow them across upgrades.
+    assert "NoNewPrivileges" not in template
+    assert "SystemCallFilter" not in template
+    assert "ReadWritePaths=/tmp" not in template, (
+        "the base unit runs PrivateTmp=yes; granting the shared /tmp would"
+        " widen what the process can touch"
+    )
     assert "ALLOWED_ROOTS" not in template
-    assert "ReadWritePaths=/tmp" in template
-    assert "ReadWritePaths=/var/tmp" in template
 
 
 def test_install_sh_wires_and_renders_the_bridge_drop_in() -> None:
@@ -523,9 +541,11 @@ def test_install_sh_wires_and_renders_the_bridge_drop_in() -> None:
     )
     assert "render_harden \\" in install, "the bridge renderer must be invoked"
     assert "UNIT_NAME=opencode-telegram-bridge.service" in install
-    assert "$UNIT_NAME.service.d" in install, (
-        "the drop-in must land in the bridge unit's conf.d"
+    assert "$UNIT_NAME.d" in install, (
+        "the drop-in must land in the bridge unit's conf.d -"
+        " $UNIT_NAME ends in .service, appending .service.d would double it"
     )
+    assert "$UNIT_NAME.service.d" not in install
     subprocess.run(["bash", "-n", str(_REPO / "install.sh")], check=True)
 
 
@@ -572,12 +592,7 @@ def test_the_bridge_renderer_grants_only_bridge_paths(tmp_path) -> None:
 
     for placeholder in ("@REPO@", "@PYTHON@", "@RW_PATHS@", "@SANDBOX@"):
         assert placeholder not in rendered, f"unresolved placeholder: {placeholder}"
-    shared_temp = {"ReadWritePaths=/tmp", "ReadWritePaths=/var/tmp"}
-    grants = [
-        line
-        for line in rendered.splitlines()
-        if line.startswith("ReadWritePaths=") and line not in shared_temp
-    ]
+    grants = [line for line in rendered.splitlines() if line.startswith("ReadWritePaths=")]
     assert grants == [
         f'ReadWritePaths="{workspace}"',
         f'ReadWritePaths="{state_dir}"',

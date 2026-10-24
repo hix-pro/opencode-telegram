@@ -2,32 +2,52 @@
 
 ## v2.3.7 — 2026-10-24
 
-The bridge unit gets its own OS sandbox. A security scan of the project rated
-the codebase good but flagged one concrete gap: `install.sh --harden-server`
-sands down the execution surface, while the **bridge** — the process that
-holds the bot token and parses Telegram's untrusted traffic around the clock
-— ran under the desktop user with no OS boundary at all.
+A security scan flagged the bridge service as running without an OS
+boundary. The deployment truth turned out more nuanced — the bridge has
+carried an inline process-level sandbox in its base unit since v2.3.0 — but
+the wiring behind that sandbox had three real weaknesses, and this release
+closes all of them.
 
-### Added
+### Changed
 
-- **`bash install.sh --harden-bridge`** renders
-  `systemd/opencode-telegram-bridge-hardening.conf.in` into
-  `opencode-telegram-bridge.service.d/50-hardening.conf`: `NoNewPrivileges`,
-  `ProtectSystem=strict`, `ProtectHome=read-only`, empty capability set,
-  native call architecture, `@system-service` syscall filter and a restricted
-  socket family set — the directive set already proven on the server unit.
-- The bridge's writable universe is deliberately tighter than the server's:
-  only its repo directory (state, logs, heartbeat, attachments) and shared
-  `/tmp`. It never writes into `ALLOWED_ROOTS`, so the drop-in is valid with
-  any configuration — including an empty one — and cannot be widened by a
-  later root change.
-- `uninstall.sh` now removes the bridge drop-in as well.
+- **The filesystem sandbox is no longer tied to `ALLOWED_ROOTS`.** It used
+  to live in the conditional `@SANDBOX@` rendering of the base bridge unit,
+  so an install without roots silently lost `ProtectSystem=strict` and
+  `ProtectHome=read-only`. `bash install.sh --harden-bridge` now renders
+  both directives — plus a repo-scoped `ReadWritePaths` — into
+  `opencode-telegram-bridge.service.d/50-hardening.conf`, and the flag is
+  valid with any configuration, including an empty one.
+- **The bridge no longer receives the project roots as writable.** The old
+  inline rendering added every `ALLOWED_ROOTS` entry to the bridge's
+  `ReadWritePaths`, although nothing in the bridge writes into project
+  directories: state, logs, heartbeat and the attachment cache all live in
+  the repo, and downloads stage inside its private tmp. The token-holding
+  process could nonetheless have written there. The drop-in grants only the
+  repo directory and the `STATE_FILE`/`LOG_FILE` parents; unpinned tests
+  enforce that neither the template nor the rendered output can name the
+  roots again.
+- **The base unit's socket whitelist gains `AF_NETLINK`**, matching the set
+  already proven on the server unit (used by `getaddrinfo` on this stack).
+
+### Fixed
+
+- `install.sh` wrote the `--harden-bridge` drop-in into
+  `opencode-telegram-bridge.service.service.d` — a doubled suffix that
+  systemd ignores, because the unit name already ends in `.service`. The
+  drop-in now lands in `$UNIT_NAME.d`; `uninstall.sh` removes it, alongside
+  the server drop-in.
 
 ### Documentation
 
-- `docs/HARDENING.md` documents the bridge sandbox, the difference in
-  writable sets between the two units, and the updated install/uninstall
-  flow; README points at both flags.
+- `docs/HARDENING.md`: the two-unit path model (the bridge's process-level
+  sandbox lives in its base unit since v2.3.0; the drop-in is the
+  filesystem half), install, verification and rollback instructions.
+  README's security section points at both flags.
+
+**Upgrade:** pull and run `bash install.sh --harden-bridge` once. Rollback
+is one file: remove
+`~/.config/systemd/user/opencode-telegram-bridge.service.d/50-hardening.conf`,
+run `systemctl --user daemon-reload` and restart the service.
 
 ## v2.3.6 — 2026-10-24
 

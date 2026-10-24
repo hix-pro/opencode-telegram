@@ -128,9 +128,21 @@ def test_service_units_are_sandboxed():
         "ProtectKernelTunables=yes",
         "CapabilityBoundingSet=",
         "SystemCallFilter=@system-service",
-        "@SANDBOX@",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+        "PrivateTmp=yes",
     ):
         assert directive in bridge, f"bridge unit lost {directive}"
+    # The filesystem half must not depend on ALLOWED_ROOTS any more; it is
+    # the --harden-bridge drop-in's job (see test_hardening.py).
+    assert "@SANDBOX@" not in bridge
+
+    bridge_dropin = (systemd / "opencode-telegram-bridge-hardening.conf.in").read_text()
+    for directive in (
+        "ProtectSystem=strict",
+        "ProtectHome=read-only",
+        "@RW_PATHS@",
+    ):
+        assert directive in bridge_dropin, f"bridge drop-in lost {directive}"
 
     server = (systemd / "opencode-server-hardening.conf.in").read_text()
     for directive in (
@@ -147,6 +159,7 @@ def test_service_units_are_sandboxed():
 
     installer = (ROOT / "install.sh").read_text()
     assert "--harden-server" in installer
+    assert "--harden-bridge" in installer
     assert "ReadWritePaths=" in installer
 
 
