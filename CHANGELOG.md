@@ -23,7 +23,7 @@ closes all of them.
   directories: state, logs, heartbeat and the attachment cache all live in
   the repo, and downloads stage inside its private tmp. The token-holding
   process could nonetheless have written there. The drop-in grants only the
-  repo directory and the `STATE_FILE`/`LOG_FILE` parents; unpinned tests
+  repo directory and the `STATE_FILE`/`LOG_FILE` parents; pinned tests
   enforce that neither the template nor the rendered output can name the
   roots again.
 - **The base unit's socket whitelist gains `AF_NETLINK`**, matching the set
