@@ -18,24 +18,27 @@ surface unrestricted. Both units need a boundary.
 
 ## What the units enforce
 
-`install.sh` renders the bridge and watchdog units from `systemd/*.in` and
-installs the sandbox block automatically when `ALLOWED_ROOTS` is set.
+`install.sh` renders the bridge and watchdog units from `systemd/*.in`. The
+bridge's process-level sandbox and the watchdog's are installed
+automatically; the filesystem boundaries for both working units come from
+the `--harden-bridge` / `--harden-server` drop-ins.
 
 | Control | Effect |
 |---|---|
 | `NoNewPrivileges=yes` | no setuid/setgid escalation |
 | `CapabilityBoundingSet=` | drops all Linux capabilities |
 | `ProtectSystem=strict` | `/usr`, `/etc`, `/boot`, `/var` (except temp) read-only |
-| `ProtectHome=read-only` | home is read-only; `ReadWritePaths` carves out what the agent needs |
-| `ReadWritePaths=` | checkout, state/log parents and every `ALLOWED_ROOTS` entry |
+| `ProtectHome=read-only` | home is read-only; `ReadWritePaths` carves out what each unit needs |
+| `ReadWritePaths=` | bridge: its repo dir and state/log parents only; server: checkout, state/log parents and every `ALLOWED_ROOTS` entry |
 | `PrivateTmp=yes` (bridge) | private `/tmp`; the server keeps shared temp for tooling |
 | `ProtectKernel*`, `ProtectClock`, `ProtectHostname` | kernel and host identity surfaces closed |
 | `RestrictSUIDSGID`, `RestrictRealtime`, `LockPersonality` | common escalation paths removed |
-| `RestrictAddressFamilies` | bridge: Unix/IPv4/IPv6; server adds netlink |
+| `RestrictAddressFamilies` | Unix/IPv4/IPv6 plus netlink on both units |
 | `SystemCallFilter=@system-service` | broad but non-administrative syscall set |
 | `UMask=0077` | new files are owner-only by default |
 
-Measured on the reference deployment with `systemd-analyze security --user`:
+Measured on the reference deployment with `systemd-analyze security --user`
+(both drop-ins applied):
 
 | Unit | Before | After |
 |---|---|---|
@@ -60,12 +63,15 @@ bash install.sh --harden-server
 
 `--harden-bridge` writes
 `~/.config/systemd/user/opencode-telegram-bridge.service.d/50-hardening.conf`
-and applies on the bridge's own restart. It is valid for any `ALLOWED_ROOTS`:
-the bridge's writable set is only its repo directory (state, logs, heartbeat,
-attachments) and shared `/tmp` — it never writes into project roots, so those
-are deliberately **not** granted. The directive set mirrors the server's
-proven profile (no new privileges, strict system protection, empty capability
-set, syscall filter).
+and applies on the bridge's own restart. The bridge's **process-level**
+sandbox (no new privileges, kernel surfaces, private tmp, empty capability
+set, syscall and socket whitelists, `AF_NETLINK` included) is rendered into
+the base unit itself since v2.3.0 and needs no flag. This drop-in adds the
+**filesystem** half — `ProtectSystem=strict`, `ProtectHome=read-only` and a
+writable set of only the repo directory (state, logs, heartbeat,
+attachments) plus the `STATE_FILE`/`LOG_FILE` parents when configured
+elsewhere. It is valid for any `ALLOWED_ROOTS`: it never grants the project
+roots, because nothing in the bridge writes into them.
 
 `--harden-server` writes
 `~/.config/systemd/user/opencode-server.service.d/50-hardening.conf`, reloads
@@ -94,8 +100,10 @@ adds each entry to `ReadWritePaths`. If it contains `$HOME` (the reference
 deployment does), the sandbox still protects system paths, capabilities and
 privilege escalation, but **the home tree remains writable** — including SSH
 keys, browser profiles and cloud credentials. The **bridge** drop-in never
-grants the roots: however broad the roots are, its writable universe stays the
-repo directory and `/tmp`, which is why it is safe to apply unconditionally.
+grants the roots: however broad the roots are, its writable universe stays
+the repo directory (plus the `STATE_FILE`/`LOG_FILE` parents when
+configured elsewhere) and its own private tmp, which is why it is safe to
+apply unconditionally.
 
 Narrow the roots to get real containment:
 
@@ -140,11 +148,25 @@ credentials in the environment.
 
 ## Rollback
 
+Server drop-in:
+
 ```bash
 rm ~/.config/systemd/user/opencode-server.service.d/50-hardening.conf
 systemctl --user daemon-reload
 systemctl --user restart opencode-server opencode-telegram-bridge
 ```
 
-For the bridge, restore the unit from a previous checkout and re-run
-`bash install.sh`, or delete the installed unit and reinstall.
+Bridge drop-in:
+
+```bash
+rm ~/.config/systemd/user/opencode-telegram-bridge.service.d/50-hardening.conf
+systemctl --user daemon-reload
+systemctl --user restart opencode-telegram-bridge
+```
+
+(Both `systemctl restart` calls are package-safe: the process-level sandbox
+in the bridge's base unit stays regardless; only the filesystem half and its
+writable set revert.)
+
+`rmdir` the now-empty `*.service.d` directories afterwards if you want them
+gone.

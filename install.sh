@@ -26,10 +26,11 @@ for arg in "$@"; do
             echo "  --harden-server  also sandbox the opencode-server unit."
             echo "                   The server executes agent commands; this"
             echo "                   limits what a compromised turn can touch."
-            echo "  --harden-bridge  sandbox the bridge unit itself: the process"
-            echo "                   that holds the bot token and reads Telegram's"
-            echo "                   untrusted traffic can then only write its own"
-            echo "                   state, logs, heartbeat, attachments and /tmp."
+            echo "  --harden-bridge  sandbox the bridge unit itself: turn on the"
+            echo "                   filesystem boundary for the process that holds"
+            echo "                   the bot token - it can then write only its own"
+            echo "                   state, logs, heartbeat and attachments, and"
+            echo "                   reads stay read-only. Works with any roots."
             exit 0
             ;;
         *)
@@ -134,18 +135,10 @@ def rw_lines():
     return "\n".join(lines)
 
 
-# The filesystem half of the sandbox is only meaningful (and only safe to
-# enable) when ALLOWED_ROOTS narrows the tree. Unrestricted installs keep the
-# app-level allow-list and the non-filesystem hardening in the template.
-if values.get("ALLOWED_ROOTS", "").strip():
-    sandbox = "\n".join(
-        ["ProtectSystem=strict", "ProtectHome=read-only", rw_lines()]
-    )
-else:
-    sandbox = (
-        "# Filesystem sandbox disabled: ALLOWED_ROOTS is empty. The application\n"
-        "# allow-list is the only boundary. Set roots and re-run install.sh."
-    )
+# The filesystem half of the sandbox is owned by --harden-bridge's drop-in;
+# the conditional @SANDBOX@ rendering that used to live here is gone: with
+# empty roots the bridge lost ProtectSystem, and set roots pushed the full
+# project tree into a token-holding process's writable set.
 
 out = (
     Path(src)
@@ -153,16 +146,16 @@ out = (
     .replace("@REPO@", repo)
     .replace("@PYTHON@", python)
     .replace("@RW_PATHS@", rw_lines())
-    .replace("@SANDBOX@", sandbox)
 )
 Path(dst).write_text(out)
 PY
 }
 
+# ------------------------------------------------------------------- bridge
 # The bridge's own writable set is different from the server's: it never
 # writes into ALLOWED_ROOTS, so those roots are deliberately not granted.
 # Only the repo directory and, if configured elsewhere, the state/log
-# parents are writable; /tmp and /var/tmp are added inside the template.
+# parents are writable; /tmp is the unit's own private one.
 render_harden() {
     python3 - "$1" "$2" "$UNIT_REPO" "$HERE/.env" << 'PY'
 import sys
@@ -240,9 +233,9 @@ if [ "$HARDEN_SERVER" = 1 ]; then
 fi
 
 # The bridge's own sandbox works with any roots: its writable universe is
-# the repo directory and shared temp only, never the projects.
+# the repo directory and its private temp only, never the projects.
 if [ "$HARDEN_BRIDGE" = 1 ]; then
-    BRIDGE_DROPIN_DIR="$UNIT_DIR/$UNIT_NAME.service.d"
+    BRIDGE_DROPIN_DIR="$UNIT_DIR/$UNIT_NAME.d"
     mkdir -p "$BRIDGE_DROPIN_DIR"
     render_harden \
         "$HERE/systemd/opencode-telegram-bridge-hardening.conf.in" \
