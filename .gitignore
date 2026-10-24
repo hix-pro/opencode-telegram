@@ -6,7 +6,6 @@
 # Runtime state and logs
 .state.json
 .bridge-heartbeat
-backup-essential.sh
 .session.json
 bridge.log
 bridge.log.*
@@ -21,3 +20,4 @@ __pycache__/
 # Local backups and snapshots
 .backup/
 backups/
+backup-essential.sh
