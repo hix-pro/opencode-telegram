@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.3.6 — 2026-10-24
+
+Closing pass of the second reliability audit: the remaining unaudited scope
+(`scripts/heartbeat_watchdog.py`, `bridgekit/selftest.py`,
+`bridgekit/command_handlers/files.py`) plus release hygiene. The watchdog and
+the files/shell handlers came out clean; `/selftest` had two small defects.
+
+### Fixed
+
+- **`/selftest` no longer leaks its workspace.** When no directory is supplied,
+  the run created a `bridge-selftest-*` directory in `/tmp` and never removed
+  it - one new directory per invocation. It is now cleaned up together with
+  the session cleanup; a caller-supplied directory is left untouched.
+- **The prompt round-trip detail reports true elapsed seconds.** The old
+  expression (`time.time() - submitted // 1000`) mixed units, and the displayed
+  duration was carried by an operator-precedence accident.
+
+### Documentation
+
+- README marks the "How it works" diagram as a sketch and points to the
+  authoritative thread table.
+- `.gitignore` groups `backup-essential.sh` with the local backups and
+  snapshots instead of the runtime state and logs section.
+
+### Deployment
+
+- The runtime must satisfy the declared floor: the reference deployment now
+  runs `requests 2.34.2` (system python previously had 2.31.0) and the bridge
+  service was restarted onto this release on the same day.
+
 ## v2.3.5 — 2026-10-24
 
 Reliability audit: every fix below comes out of a full code review and has a

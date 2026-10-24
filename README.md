@@ -30,6 +30,9 @@ Telegram ──getUpdates(long poll)──► bridge.py
         └─────────────────────────────────────────────┘
 ```
 
+*Sketch of the main flows only; the table below is the authoritative list of
+background threads.*
+
 Five background threads, so nothing the agent does can block the chat (plus
 one `turn-<chat>` thread per running turn):
 

@@ -8,6 +8,7 @@ terminal.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -63,6 +64,8 @@ def _timed(name: str, func) -> Result:
 def run(api: OpenCode, directory: str | None = None) -> Report:
     """Exercise the paths the bridge actually depends on."""
     report = Report()
+    # A throwaway workspace is only used when the caller did not name one.
+    created_here = directory is None
     workdir = directory or tempfile.mkdtemp(prefix="bridge-selftest-")
     session_id = None
 
@@ -96,7 +99,8 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
             while time.time() < deadline:
                 text = OpenCode.assistant_text(api.messages(sid, 20, "desc"), submitted)
                 if text:
-                    return f"replied in {int(time.time() - submitted // 1000)}s"
+                    elapsed = time.time() - submitted / 1000
+                    return f"replied in {max(1, int(elapsed + 0.5))}s"
                 time.sleep(0.5)
             raise TimeoutError("the turn never finished")
 
@@ -148,6 +152,8 @@ def run(api: OpenCode, directory: str | None = None) -> Report:
                 api.delete_session(session_id)
             except ApiError:
                 pass
+        if created_here:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     return report
 

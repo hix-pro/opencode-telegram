@@ -118,6 +118,59 @@ def test_event_probe_fails_when_the_stream_will_not_connect(monkeypatch):
         selftest._probe_events(FakeApi(), "ses_1")
 
 
+def test_run_cleans_up_its_thrownaway_workspace():
+    """run(None) used to leak one bridge-selftest-* directory per invocation."""
+    import glob
+    import os
+
+    class FakeApi:
+        base, auth = "http://x", None
+
+        def info(self):
+            raise RuntimeError("server went away")
+
+        def create_session(self, directory):
+            return {"id": "ses_1"}
+
+        def send_prompt(self, session_id, prompt):
+            raise RuntimeError("server went away")
+
+        def delete_session(self, session_id):
+            pass
+
+    pattern = os.path.join(tempfile.gettempdir(), "bridge-selftest-*")
+    before = set(glob.glob(pattern))
+    report = selftest.run(FakeApi())
+    after = set(glob.glob(pattern))
+
+    assert report.failed > 0
+    assert before == after, "a thrownaway selftest workspace must not survive the run"
+
+
+def test_run_leaves_a_caller_supplied_directory_alone():
+    """A directory the caller chose is never deleted by the selftest."""
+    import os
+
+    class FakeApi:
+        base, auth = "http://x", None
+
+        def info(self):
+            raise RuntimeError("server went away")
+
+        def create_session(self, directory):
+            return {"id": "ses_1"}
+
+        def send_prompt(self, session_id, prompt):
+            raise RuntimeError("server went away")
+
+        def delete_session(self, session_id):
+            pass
+
+    caller_dir = tempfile.mkdtemp(prefix="keep-me-")
+    selftest.run(FakeApi(), caller_dir)
+    assert os.path.isdir(caller_dir), "a caller-supplied directory must survive the run"
+
+
 def test_run_cleans_up_its_session_even_when_a_check_fails():
     """A failed self-test must not leave sessions lying around."""
     deleted = []
