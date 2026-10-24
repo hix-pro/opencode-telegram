@@ -51,14 +51,28 @@ number.
 # bridge + watchdog (always)
 bash install.sh
 
-# the execution surface too (requires ALLOWED_ROOTS)
+# the bridge process itself (safe with any ALLOWED_ROOTS)
+bash install.sh --harden-bridge
+
+# the execution surface too (refuses to run with an empty ALLOWED_ROOTS)
 bash install.sh --harden-server
 ```
+
+`--harden-bridge` writes
+`~/.config/systemd/user/opencode-telegram-bridge.service.d/50-hardening.conf`
+and applies on the bridge's own restart. It is valid for any `ALLOWED_ROOTS`:
+the bridge's writable set is only its repo directory (state, logs, heartbeat,
+attachments) and shared `/tmp` — it never writes into project roots, so those
+are deliberately **not** granted. The directive set mirrors the server's
+proven profile (no new privileges, strict system protection, empty capability
+set, syscall filter).
 
 `--harden-server` writes
 `~/.config/systemd/user/opencode-server.service.d/50-hardening.conf`, reloads
 systemd, restarts the server and the bridge, and leaves the drop-in in place
-across upgrades. `uninstall.sh` removes it.
+across upgrades. It refuses to run while `ALLOWED_ROOTS` is empty, because the
+server needs to write new project sessions. `uninstall.sh` removes both
+drop-ins.
 
 Verify:
 
@@ -75,11 +89,13 @@ and aborts a turn through the same endpoints the bridge uses.
 
 ## The path model, and why `ALLOWED_ROOTS` is still the boundary
 
-`install.sh` reads `ALLOWED_ROOTS` from `.env` and adds each entry to
-`ReadWritePaths`. If it contains `$HOME` (the reference deployment does), the
-sandbox still protects system paths, capabilities and privilege escalation,
-but **the home tree remains writable** — including SSH keys, browser profiles
-and cloud credentials.
+For the **server** drop-in, `install.sh` reads `ALLOWED_ROOTS` from `.env` and
+adds each entry to `ReadWritePaths`. If it contains `$HOME` (the reference
+deployment does), the sandbox still protects system paths, capabilities and
+privilege escalation, but **the home tree remains writable** — including SSH
+keys, browser profiles and cloud credentials. The **bridge** drop-in never
+grants the roots: however broad the roots are, its writable universe stays the
+repo directory and `/tmp`, which is why it is safe to apply unconditionally.
 
 Narrow the roots to get real containment:
 

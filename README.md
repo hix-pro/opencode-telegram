@@ -494,10 +494,12 @@ This bridge is a remote shell. Treat these as non-negotiable:
 
 For a threat model, a hardened configuration checklist and the limits of the
 application-level controls, see [SECURITY.md](SECURITY.md). The units can be
-sandboxed as well: `bash install.sh --harden-server` renders the OS-level
-boundary described in [docs/HARDENING.md](docs/HARDENING.md). For anything
-reachable from Telegram, run the bridge as a dedicated OS user or in a
-container/VM with only the files and credentials it needs.
+sandboxed as well: `bash install.sh --harden-bridge --harden-server` renders
+the OS-level boundaries described in
+[docs/HARDENING.md](docs/HARDENING.md) — the bridge one (token-holding
+process) applies with any configuration. For anything reachable from
+Telegram, run the bridge as a dedicated OS user or in a container/VM with
+only the files and credentials it needs.
 
 ## Requirements
 

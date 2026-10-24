@@ -15,15 +15,21 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 
 HARDEN_SERVER=0
+HARDEN_BRIDGE=0
 for arg in "$@"; do
     case "$arg" in
         --harden-server) HARDEN_SERVER=1 ;;
+        --harden-bridge) HARDEN_BRIDGE=1 ;;
         -h|--help)
-            echo "Usage: bash install.sh [--harden-server]"
+            echo "Usage: bash install.sh [--harden-server] [--harden-bridge]"
             echo
             echo "  --harden-server  also sandbox the opencode-server unit."
             echo "                   The server executes agent commands; this"
             echo "                   limits what a compromised turn can touch."
+            echo "  --harden-bridge  sandbox the bridge unit itself: the process"
+            echo "                   that holds the bot token and reads Telegram's"
+            echo "                   untrusted traffic can then only write its own"
+            echo "                   state, logs, heartbeat, attachments and /tmp."
             exit 0
             ;;
         *)
@@ -153,6 +159,55 @@ Path(dst).write_text(out)
 PY
 }
 
+# The bridge's own writable set is different from the server's: it never
+# writes into ALLOWED_ROOTS, so those roots are deliberately not granted.
+# Only the repo directory and, if configured elsewhere, the state/log
+# parents are writable; /tmp and /var/tmp are added inside the template.
+render_harden() {
+    python3 - "$1" "$2" "$UNIT_REPO" "$HERE/.env" << 'PY'
+import sys
+from pathlib import Path
+
+src, dst, repo, env_path = sys.argv[1:5]
+
+values = {}
+env = Path(env_path)
+if env.exists():
+    for raw in env.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+
+
+def resolved(raw):
+    return str(Path(raw).expanduser().resolve())
+
+
+def quoted(path):
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+paths = [resolved(repo)]
+for key in ("STATE_FILE", "LOG_FILE"):
+    raw = values.get(key, "").strip()
+    if raw:
+        paths.append(resolved(Path(raw).expanduser().parent))
+
+lines = []
+for path in dict.fromkeys(paths):
+    prefix = "" if Path(path).exists() else "-"
+    lines.append(f"ReadWritePaths={prefix}{quoted(path)}")
+
+out = Path(src).read_text().replace("@RW_PATHS@", "\n".join(lines))
+Path(dst).write_text(out)
+PY
+}
+
 # ------------------------------------------------------------------- service
 mkdir -p "$UNIT_DIR"
 render_unit "$HERE/systemd/$UNIT_NAME.in" "$UNIT_DIR/$UNIT_NAME"
@@ -182,6 +237,17 @@ if [ "$HARDEN_SERVER" = 1 ]; then
         red "not hardening the server: ALLOWED_ROOTS is empty"
         info "set ALLOWED_ROOTS in .env, then re-run with --harden-server"
     fi
+fi
+
+# The bridge's own sandbox works with any roots: its writable universe is
+# the repo directory and shared temp only, never the projects.
+if [ "$HARDEN_BRIDGE" = 1 ]; then
+    BRIDGE_DROPIN_DIR="$UNIT_DIR/$UNIT_NAME.service.d"
+    mkdir -p "$BRIDGE_DROPIN_DIR"
+    render_harden \
+        "$HERE/systemd/opencode-telegram-bridge-hardening.conf.in" \
+        "$BRIDGE_DROPIN_DIR/50-hardening.conf"
+    info "bridge hardening drop-in installed"
 fi
 
 systemctl --user daemon-reload
@@ -224,8 +290,8 @@ Next steps
   2. /help lists every command.
   3. Logs:  journalctl --user-unit=$UNIT_NAME -f --no-pager
            tail -f $HERE/bridge.log
-  4. Harden the execution surface as well:
-           bash install.sh --harden-server
+  4. Sandbox both services as well:
+           bash install.sh --harden-bridge --harden-server
 
 To uninstall:  $HERE/uninstall.sh
 EOF

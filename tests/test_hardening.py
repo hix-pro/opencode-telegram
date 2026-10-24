@@ -7,8 +7,12 @@ so the names are the failure modes rather than the functions.
 from __future__ import annotations
 
 import queue
+import re
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 from bridgekit import attachments
 from bridgekit.api import ApiError
@@ -474,3 +478,115 @@ def test_backlog_is_bounded(tmp_path):
         if len(bridge._backlog["42"]) < 5:
             bridge._backlog["42"].append(("42", f"m{i}", None))
     assert len(bridge._backlog["42"]) <= 5
+
+
+# ================================================================
+# The bridge unit's own sandbox (v2.3.7)
+# ================================================================
+
+_REPO = Path(__file__).resolve().parents[1]
+
+
+def _repo_text(name: str) -> str:
+    return _REPO.joinpath(name).read_text()
+
+
+def test_the_bridge_hardening_template_carries_the_sandbox_profile() -> None:
+    template = _repo_text("systemd/opencode-telegram-bridge-hardening.conf.in")
+    for directive in (
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "ProtectHome=read-only",
+        "@RW_PATHS@",
+        "CapabilityBoundingSet=",
+        "SystemCallFilter=@system-service",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+    ):
+        assert directive in template, f"missing sandbox directive: {directive}"
+
+
+def test_the_bridge_sandbox_never_grants_the_project_roots() -> None:
+    """The bridge never writes into ALLOWED_ROOTS - only its repo dir and
+    /tmp are writable here. If the template ever named the roots again, a
+    reconnect would silently widen the sandbox of a token-holding process."""
+    template = _repo_text("systemd/opencode-telegram-bridge-hardening.conf.in")
+    assert "ALLOWED_ROOTS" not in template
+    assert "ReadWritePaths=/tmp" in template
+    assert "ReadWritePaths=/var/tmp" in template
+
+
+def test_install_sh_wires_and_renders_the_bridge_drop_in() -> None:
+    install = _repo_text("install.sh")
+    assert "--harden-bridge) HARDEN_BRIDGE=1" in install, "flag must be parsed"
+    assert "opencode-telegram-bridge-hardening.conf.in" in install, (
+        "the template must be the render source"
+    )
+    assert "render_harden \\" in install, "the bridge renderer must be invoked"
+    assert "UNIT_NAME=opencode-telegram-bridge.service" in install
+    assert "$UNIT_NAME.service.d" in install, (
+        "the drop-in must land in the bridge unit's conf.d"
+    )
+    subprocess.run(["bash", "-n", str(_REPO / "install.sh")], check=True)
+
+
+def test_the_bridge_renderer_grants_only_bridge_paths(tmp_path) -> None:
+    """Run the embedded render_harden python against a checkout with a space
+    in its name: the rendered drop-in must grant exactly the repo directory
+    and the state-file parent - never the ALLOWED_ROOTS entry."""
+    workspace = tmp_path / "checkout dir"
+    workspace.mkdir()
+    state_dir = tmp_path / "state data"
+    state_dir.mkdir()
+    forbidden_root = tmp_path / "projects"
+    forbidden_root.mkdir()
+
+    env_file = tmp_path / "s.env"
+    env_file.write_text(
+        "TELEGRAM_BOT_TOKEN=x\n"
+        "TELEGRAM_CHAT_ID=1\n"
+        f"ALLOWED_ROOTS={forbidden_root}\n"
+        f"STATE_FILE={state_dir / '.state.json'}\n"
+    )
+
+    match = re.search(
+        r"render_harden\(\) \{\n    python3 - \S.*? << 'PY'\n(.*?)\nPY\n\}",
+        _repo_text("install.sh"),
+        re.DOTALL,
+    )
+    assert match, "render_harden's embedded python not found in install.sh"
+
+    rendered_path = tmp_path / "50-hardening.conf"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            match.group(1),
+            str(_REPO / "systemd/opencode-telegram-bridge-hardening.conf.in"),
+            str(rendered_path),
+            str(workspace),
+            str(env_file),
+        ],
+        check=True,
+    )
+    rendered = rendered_path.read_text()
+
+    for placeholder in ("@REPO@", "@PYTHON@", "@RW_PATHS@", "@SANDBOX@"):
+        assert placeholder not in rendered, f"unresolved placeholder: {placeholder}"
+    shared_temp = {"ReadWritePaths=/tmp", "ReadWritePaths=/var/tmp"}
+    grants = [
+        line
+        for line in rendered.splitlines()
+        if line.startswith("ReadWritePaths=") and line not in shared_temp
+    ]
+    assert grants == [
+        f'ReadWritePaths="{workspace}"',
+        f'ReadWritePaths="{state_dir}"',
+    ], f"unexpected writable set: {grants}"
+    assert str(forbidden_root) not in rendered, "project root must not be granted"
+
+
+def test_uninstall_removes_both_hardening_drop_ins() -> None:
+    install = _repo_text("uninstall.sh")
+    assert "opencode-server.service.d/50-hardening.conf" in install
+    assert "opencode-telegram-bridge.service.d/50-hardening.conf" in install
+    subprocess.run(["bash", "-n", str(_REPO / "uninstall.sh")], check=True)
