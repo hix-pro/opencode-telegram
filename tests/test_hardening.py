@@ -605,3 +605,45 @@ def test_uninstall_removes_both_hardening_drop_ins() -> None:
     assert "opencode-server.service.d/50-hardening.conf" in install
     assert "opencode-telegram-bridge.service.d/50-hardening.conf" in install
     subprocess.run(["bash", "-n", str(_REPO / "uninstall.sh")], check=True)
+
+
+# ================================================================
+# Dedicated-user migration (v2.3.8)
+# ================================================================
+
+
+def test_the_migration_script_retires_the_originals_safely() -> None:
+    script = _repo_text("scripts/migrate-dedicated-user.sh")
+    for marker in (
+        "--check",
+        "--apply",
+        "loginctl enable-linger",
+        "useradd -m -s /usr/sbin/nologin",
+        "install.sh --harden-bridge --harden-server",
+    ):
+        assert marker in script, f"migration script lost: {marker}"
+    # Never decommission by deleting: the old user's units are stopped and
+    # disabled only after the new ones verify healthy - and only via the
+    # old owner's own systemd manager, never root's.
+    assert "systemctl --user stop" in script
+    assert "systemctl --user disable" in script
+    assert '"$OLD_OWNER"' in script
+    assert "rm -rf" not in script, "no destructive steps belong in a migration"
+    subprocess.run(
+        ["bash", "-n", str(_REPO / "scripts/migrate-dedicated-user.sh")], check=True
+    )
+
+
+def test_hardening_doc_carries_the_dedicated_user_runbook() -> None:
+    doc = _repo_text("docs/HARDENING.md")
+    for fragment in (
+        "## Running under a dedicated user",
+        "scripts/migrate-dedicated-user.sh",
+        "loginctl enable-linger",
+        "Rollback:",
+    ):
+        assert fragment in doc, f"runbook missing: {fragment}"
+    readme = _repo_text("README.md")
+    assert "scripts/migrate-dedicated-user.sh" in readme, (
+        "README must point at the concrete migration it recommends"
+    )

@@ -75,9 +75,9 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
       - name: Syntax
-        run: bash -n install.sh uninstall.sh hooks/pre-commit
+        run: bash -n install.sh uninstall.sh hooks/pre-commit scripts/migrate-dedicated-user.sh
       - name: Shellcheck
-        run: shellcheck install.sh uninstall.sh hooks/pre-commit
+        run: shellcheck install.sh uninstall.sh hooks/pre-commit scripts/migrate-dedicated-user.sh
 
   secrets:
     runs-on: ubuntu-latest

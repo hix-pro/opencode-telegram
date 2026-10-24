@@ -146,6 +146,63 @@ account or in a container/VM, mount only the project tree, inject only the
 credentials that turn needs, and keep no SSH agent socket or cloud
 credentials in the environment.
 
+## Running under a dedicated user
+
+Readable is the boundary the sandbox cannot move: everything your user can
+read, a compromised bridge or server can read (SSH keys, browser profiles,
+mail, other projects' tokens), no matter how tight the `Protect*` set is.
+The fix is identity: the units stop running as you.
+
+`scripts/migrate-dedicated-user.sh` performs the mechanical work; browse it
+before running anything:
+
+```bash
+sudo bash scripts/migrate-dedicated-user.sh --check   # show the plan
+sudo bash scripts/migrate-dedicated-user.sh --apply   # perform it
+```
+
+In order it: creates the user (name via `NEW_USER`, default `bridge`),
+copies the checkout into `/home/bridge/app` (`APP_DIR`) including the
+`.env`, state, logs and the attachment cache, copies the OpenCode server's
+data trees (`~/.config/opencode`, `~/.local/share/opencode`,
+`~/.local/state/opencode` — sessions, auth and the service password carry
+over), runs `loginctl enable-linger` so the user manager runs without a
+login session, re-runs `install.sh --harden-bridge --harden-server` as the
+new user, verifies both units, and only then stops and disables the
+originals. The originals stay defined: rollback is a start command.
+
+Install the `opencode` binary system-wide first (`sudo npm install --global
+opencode`) so the new user resolves it without borrowing your home. If the
+binary only exists in your `~/.npm-global`, the script warns and the server
+will not start there until you install it globally or copy the tree.
+
+After the migration:
+
+- Logs and status live under the new user:
+  `runuser -u bridge -- env XDG_RUNTIME_DIR=/run/user/$(id -u bridge) ...`.
+- Upgrades: `sudo -u bridge git -C /home/bridge/app pull`, then re-run
+  `install.sh --harden-bridge --harden-server` as that user.
+- The `opencode` client should run as that user too, so CLI, server and
+  bridge all share one state tree instead of two.
+- The backup unit (`opencode-backup.service`) keeps running as you: point
+  its `ExecStart` at `/home/bridge/app/backup-essential.sh` and retire the
+  now-unused `~/opencode-bridge` alias.
+- Roll a token or password: edit `.env` under the app dir, restart.
+
+Rollback:
+
+```bash
+runuser -u bridge -- env XDG_RUNTIME_DIR=/run/user/$(id -u bridge) \
+  systemctl --user stop opencode-server.service \
+    opencode-telegram-bridge.service opencode-watchdog.timer
+# your original units - still defined, just stopped:
+systemctl --user start opencode-server.service \
+  opencode-telegram-bridge.service opencode-watchdog.timer
+```
+
+Nothing is deleted, so a failed attempt never costs the working
+deployment; fix whatever the script flagged and re-run.
+
 ## Rollback
 
 Server drop-in:
