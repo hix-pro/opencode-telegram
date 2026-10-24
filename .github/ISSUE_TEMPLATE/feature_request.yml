@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a change or new capability
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution. Explain how it fits a
+        local-first Telegram bridge and whether it changes the security model.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard, missing, or unsafe today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security
+      options:
+        - label: This does not require weakening `TELEGRAM_CHAT_ID`, `ALLOWED_ROOTS`, or the command guard by default.
+        - label: I have considered what a compromised Telegram account could do with this feature.

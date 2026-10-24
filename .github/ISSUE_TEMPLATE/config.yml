@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hix-pro/opencode-telegram/security/advisories/new
+    about: Report token disclosure, authorization bypasses, or path escapes privately.
+  - name: OpenCode server issue
+    url: https://github.com/sst/opencode/issues
+    about: Problems in the OpenCode server itself belong upstream.

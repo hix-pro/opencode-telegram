@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.3.4 — 2026-10-23
+
+Security hygiene and project operations.
+
+### Added
+
+- **The OpenCode password is now redacted from outbound replies and logs**,
+  in addition to the Telegram bot token. Only passwords of eight or more
+  characters are registered, so a short password cannot turn ordinary words
+  into asterisks. This covers credentials the bridge already knows, not every
+  secret an agent might print.
+- **CodeQL analysis** on pushes, pull requests and a weekly schedule.
+- **An opt-in live-test workflow** for a dedicated self-hosted runner. It is
+  skipped unless the `LIVE_TESTS_ENABLED` repository variable is `true`; setup
+  and the security boundary are documented in
+  [docs/LIVE_TESTING.md](docs/LIVE_TESTING.md).
+- Contributor documentation: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue
+  forms and a pull-request checklist.
+
+### Changed
+
+- CI now runs the offline suite on Python 3.14 as well as 3.10–3.13.
+- Documentation no longer suggests bypassing the pre-commit hook with
+  `--no-verify`; a red gate must be fixed instead.
+
 ## v2.3.3 — 2026-10-23
 
 Security hardening and the documentation gaps from the public review.

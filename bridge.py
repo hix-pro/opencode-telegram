@@ -82,7 +82,10 @@ class Bridge:
         self.config = config
         self.api = OpenCode(config.opencode_url, config.password)
         self.telegram = Telegram(
-            config.token, max_chunk=config.max_chunk, edit_interval=config.edit_interval
+            config.token,
+            max_chunk=config.max_chunk,
+            edit_interval=config.edit_interval,
+            secrets=(config.password,),
         )
         self.state = State(config.state_file, config.default_dir)
         self.events = EventStream(config.opencode_url, ("opencode", config.password))

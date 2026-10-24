@@ -476,9 +476,10 @@ This bridge is a remote shell. Treat these as non-negotiable:
 - **Keep secrets in the environment.** Don't hardcode the bot token, and don't
   paste `.env` into the chat the bot is serving. Keep `.env` at mode `0600`;
   startup warns if it is group- or world-readable.
-- **Known bot tokens are redacted from replies and logs.** That covers the
-  bridge's own token, not every possible secret an agent might print. Treat
-  chat output as public.
+- **Known bot tokens and the OpenCode password are redacted from replies
+  and logs.** The password is filtered only when it is at least eight
+  characters. This covers the bridge's own credentials, not every possible
+  secret an agent might print; treat chat output as public.
 - **Prompt previews are off by default.** `LOG_PROMPT_CHARS` is `0`, so the
   journal records the chat id and message length but not the text. Set it to a
   positive number to log that many leading characters for debugging.
@@ -510,8 +511,9 @@ mypy                               # the type gate (pipx install mypy)
 bandit -c pyproject.toml -r bridge.py bridgekit scripts   # the security scan
 ```
 
-CI runs the gates on Python 3.12 and the offline suite on 3.10–3.13, plus
-shellcheck and a full-history secret scan.
+CI runs the gates on Python 3.12 and the offline suite on 3.10–3.14, plus
+shellcheck, a full-history secret scan, and CodeQL. A self-hosted live job is
+available but disabled by default; see [docs/LIVE_TESTING.md](docs/LIVE_TESTING.md).
 
 The pre-commit hook runs all of these: style, types, the security scan, and
 the offline suite. `mypy`/`bandit` skip themselves with a note if they are
@@ -519,9 +521,9 @@ not installed, so the hook degrades gracefully rather than failing.
 
 Every commit is guarded: `core.hooksPath` points at the tracked `hooks/`
 directory, and the pre-commit hook runs ruff, mypy, bandit and the offline
-suite. A red gate cannot land; bypass in emergencies with
-`git commit --no-verify`. It travels with the repo but not with git's
-default wiring - arm it in a fresh clone with:
+suite. A red gate cannot land; fix the gate or the code instead of bypassing
+it. The hook travels with the repo but not with git's default wiring - arm it
+in a fresh clone with:
 
 ```bash
 git config core.hooksPath hooks
@@ -565,6 +567,7 @@ Adding a command is one decorated function in the relevant
 
 ```python
 from .. import commands as core
+
 
 @core.command("ping", "Check the server", group="Help")
 def cmd_ping(ctx: core.Context) -> str:

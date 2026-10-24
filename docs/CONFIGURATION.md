@@ -80,9 +80,10 @@ access is still bound by the OS, not by this list. See
 | `LOG_PROMPT_CHARS` | `0` | Characters of each user prompt written to the journal/log. `0` logs no prompt text; set a positive value only when you need a preview. |
 
 The log is useful for diagnosing a failed turn; it is also a privacy surface.
-Keep `LOG_PROMPT_CHARS` at `0` on a shared or less-trusted machine. The bot token is
-redacted from log messages and outbound replies, but that is a narrow filter,
-not a guarantee for every secret an agent may print.
+Keep `LOG_PROMPT_CHARS` at `0` on a shared or less-trusted machine. The bot
+token and an OpenCode password of at least eight characters are redacted from
+log messages and outbound replies, but that is a narrow filter, not a guarantee
+for every secret an agent may print.
 
 ## Voice notes
 

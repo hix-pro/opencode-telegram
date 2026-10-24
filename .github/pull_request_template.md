@@ -1,14 +1,25 @@
 ## Summary
 
-Describe the change and why it is needed.
+What changed, and why?
 
-## Testing
+## Tests
 
-List the commands run to validate the change.
+- [ ] `ruff check .`
+- [ ] `ruff format --check .`
+- [ ] `mypy`
+- [ ] `bandit -q -c pyproject.toml -r bridge.py bridgekit scripts`
+- [ ] `pytest`
+- [ ] `pytest -m live` (if a server is available)
 
-## Checklist
+## Security and compatibility
 
-- [ ] I updated documentation if behavior changed
-- [ ] I ran the relevant test and lint commands
-- [ ] I checked for secret exposure
-- [ ] I considered the security impact of this change
+- [ ] No `.env`, state, session, log, attachment, or credential file is included.
+- [ ] New behavior is documented in README and, if configurable, in
+      `docs/CONFIGURATION.md` and `.env.example`.
+- [ ] This does not weaken authorization or path confinement by default.
+- [ ] I did not use `--no-verify`.
+
+## Release note
+
+One or two sentences for `CHANGELOG.md`. Mention any user-visible default
+change explicitly.

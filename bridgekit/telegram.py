@@ -42,6 +42,10 @@ ALLOWED_UPDATES = (
 MAX_COMMANDS = 100
 MAX_COMMAND_DESC = 256
 
+# Redact only reasonably long extra secrets. A one-character password would
+# otherwise turn every matching letter in every reply into "***".
+MIN_REDACT_SECRET = 8
+
 
 class TelegramError(RuntimeError):
     pass
@@ -71,10 +75,16 @@ class Telegram:
         max_chunk: int = 4096,
         timeout: int = 30,
         edit_interval: float = MIN_EDIT_INTERVAL,
+        secrets: Iterable[str] = (),
     ) -> None:
         self.base = f"https://api.telegram.org/bot{token}"
         self.file_base = f"https://api.telegram.org/file/bot{token}"
         self._token = token
+        # The bridge knows the OpenCode password too. It should not be
+        # echoed into a chat if an agent or a file dump happens to include it.
+        self._extra_secrets = tuple(
+            secret for secret in secrets if secret and len(secret) >= MIN_REDACT_SECRET
+        )
         self.max_chunk = max_chunk
         self.timeout = timeout
         self.edit_interval = edit_interval
@@ -97,11 +107,16 @@ class Telegram:
 
         Transport errors from requests embed the request URL, and every
         Telegram URL carries the bot token between ``bot`` and the method
-        name. Anything that escapes an ``except`` and may reach a log file
+        name. The bridge also registers the OpenCode password as an extra
+        secret. Anything that escapes an ``except`` and may reach a log file
         or the chat goes through this first.
         """
         text = str(value)
-        return text.replace(self._token, "***") if self._token else text
+        if self._token:
+            text = text.replace(self._token, "***")
+        for secret in self._extra_secrets:
+            text = text.replace(secret, "***")
+        return text
 
     def get_updates(
         self,

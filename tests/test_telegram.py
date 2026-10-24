@@ -127,12 +127,19 @@ def test_send_and_edit_redact_the_token_before_the_wire(monkeypatch):
                 json=lambda: {"result": {"message_id": 7}},
             )
 
-    tg = Telegram("98765")
+    tg = Telegram("98765", secrets=("server-password-123",))
     session = Capture()
     tg._http = session
 
-    tg.send("42", "the token is 98765 and must not leak")
-    assert session.payloads[0]["text"] == "the token is *** and must not leak"
+    tg.send("42", "token 98765 and password server-password-123 must not leak")
+    assert session.payloads[0]["text"] == "token *** and password *** must not leak"
 
-    assert tg.edit("42", 7, "again: 98765", force=True) is True
-    assert session.payloads[1]["text"] == "again: ***"
+    assert tg.edit("42", 7, "again: 98765 / server-password-123", force=True) is True
+    assert session.payloads[1]["text"] == "again: *** / ***"
+
+
+def test_short_extra_secrets_do_not_mangle_ordinary_text():
+    """A short password must not turn common words into asterisks."""
+    tg = Telegram("98765", secrets=("p", "abc"))
+
+    assert tg.redact("a plain reply") == "a plain reply"

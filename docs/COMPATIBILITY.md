@@ -5,8 +5,8 @@ The bridge talks to the local OpenCode HTTP API, not to a Python package, so
 
 | Component | Supported / tested |
 |---|---|
-| Bridge | v2.3.3 |
-| Python | 3.10, 3.11, 3.12, 3.13 (CI matrix); 3.12 on the reference deployment |
+| Bridge | v2.3.4 |
+| Python | 3.10, 3.11, 3.12, 3.13, 3.14 (CI matrix); 3.12 on the reference deployment |
 | OpenCode server | 2.1.2 (live suite, 2026-10-23) |
 | Telegram Bot API | long polling; `message_reaction` updates for reaction approval |
 | OS | Linux with systemd user services (reference: Ubuntu 24.04) |
