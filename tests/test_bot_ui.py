@@ -97,7 +97,8 @@ def test_card_mappings_resolve_with_their_requests(tmp_path):
     bridge._requests = {"perm_9": {}}
     bridge._perm_cards = {(CHAT, 1): "perm_9", (CHAT, 2): "ghost"}
 
-    bridge._prune_seen([])
+    # A fully-polled tick: the server no longer lists "ghost", still lists perm_9.
+    bridge._reconcile_requests({"perm_9"})
 
     assert bridge._perm_cards == {(CHAT, 1): "perm_9"}
 

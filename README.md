@@ -30,14 +30,16 @@ Telegram ──getUpdates(long poll)──► bridge.py
         └─────────────────────────────────────────────┘
 ```
 
-Four threads, so nothing the agent does can block the chat:
+Five background threads, so nothing the agent does can block the chat (plus
+one `turn-<chat>` thread per running turn):
 
 | Thread | Job |
 |---|---|
 | main | long-polls Telegram, answers commands inline, handles button callbacks |
-| worker | one turn at a time; sends the prompt and edits the reply in place |
+| worker | hands queued prompts to per-chat turn threads, one dispatch at a time |
 | events | one SSE connection to `/api/event` feeding live text deltas |
 | watcher | answers permission requests per policy, otherwise pings with buttons |
+| scheduler | hands due `/schedule` prompts to the same queue turns use |
 
 Because commands run on the main thread, `/abort`, `/yes`, and `/no` still work
 while the agent is mid-turn.
@@ -161,7 +163,7 @@ Anything that is not a slash command is sent to the agent as a prompt.
 | `/compact` | Summarise old turns to free context |
 | `/revert [go\|drop]` | Roll back the last turn |
 | `/msgs [n]` | Recent messages |
-| `/stats` | Token and cost usage per session |
+| `/stats` | Aggregate token and cost usage across all sessions |
 | `/export` | Dump the session as JSON |
 | `/search <text>` | Find past sessions by title |
 
@@ -232,7 +234,8 @@ stored in `.state.json` with macros and per-chat preferences.
 | `/write <path>` + lines below | Write a file |
 | `/git` | Working tree status |
 | `/diff` | Diff for this directory |
-| `/worktrees` | Git worktrees |
+| `/web <query>` | Search the web |
+| `/worktrees [new <name>\|rm <name>]` | List, create, or remove git worktrees |
 | `/sh <command>` | Run a shell command (see the limit below) |
 
 `/ls`, `/read`, `/find` and `/write` work on the local filesystem rather than the
@@ -254,7 +257,7 @@ such limit and streams the output as it goes.
 
 | Command | Effect |
 |---|---|
-| `/auto [ask\|read\|all]` | Auto-approval mode |
+| `/auto [ask\|read\|all\|off]` | Auto-approval mode |
 | `/policy [allow\|ask\|always\|deny <action>]` | Per-action auto-approval |
 | `/policy clear <action>` / `/policy reset` | Remove one rule / all rules |
 | `/guard` | Show denied patterns (applied to model and `/sh` commands) |

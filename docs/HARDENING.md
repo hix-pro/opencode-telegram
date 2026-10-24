@@ -98,9 +98,10 @@ guard; `/sh` and the agent still run as the same user, so only the OS boundary
 below protects those files from a determined caller.
 
 The server additionally gets its own state directories
-(`~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`,
-`~/.cache/opencode`, `~/.npm`) plus shared `/tmp` and `/var/tmp` for builds
-and test artifacts.
+(`~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`),
+its broader cache tree `~/.cache` (tool caches - pip's, npm's, browser
+profiles - all live there, and agent commands legitimately use them),
+`~/.npm`, plus shared `/tmp` and `/var/tmp` for builds and test artifacts.
 
 ## What this does not protect against
 

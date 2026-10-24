@@ -61,6 +61,11 @@ class Context:
     # finish after the dispatcher has moved on. None keeps commands
     # synchronous.
     respond: Callable[[str], None] | None = None
+    # The shared abort flow, so the typed /abort reports exactly what the
+    # button and the 👎 reaction report (busy check, abort flag, pump retry).
+    # None in tests and embedded use without a bridge: the handler falls
+    # back to a bare interrupt and still reports failures honestly.
+    stop_turn: Callable[[], str] | None = None
     # Inline keyboard a command wants attached to its reply; None means no
     # markup. Lets /sessions offer its switch buttons without handlers
     # knowing anything about sending.

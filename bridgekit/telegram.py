@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -49,6 +50,50 @@ MIN_REDACT_SECRET = 8
 
 class TelegramError(RuntimeError):
     pass
+
+
+class TelegramConflictError(TelegramError):
+    """getUpdates came back 409: another instance polls this bot token.
+
+    Unlike every other delivery failure, poll_loop cannot retry this away -
+    splitting the exception out also lets the loop treat an otherwise
+    malformed body as a transient outage instead of a reason to die.
+    """
+
+
+# Surrogates left unpaired by ``json.loads`` (``\\udXXX`` escapes). Python
+# combines real surrogate pairs at parse/compile time, so any surrogate in a
+# ``str`` is unpaired by definition - replacing every one is safe for emoji.
+LONE_SURROGATES = re.compile("[\ud800-\udfff]")
+
+
+def sanitize(text: str) -> str:
+    """Replace lone surrogates, which Telegram rejects and ``encode`` raises on.
+
+    An agent reply that quotes a binary or config artifact can carry a
+    ``\\udXXX`` escape straight from ``json.loads``. It survives the live
+    edits, but the final delivery used to die in ``split_message`` with a
+    ``UnicodeEncodeError`` - reported to the chat as a generic "the turn
+    failed" - so the U+FFFD replacement happens before anything is sent.
+    """
+    if LONE_SURROGATES.search(text):
+        return LONE_SURROGATES.sub("\ufffd", text)
+    return text
+
+
+def _ok_body(resp, method: str) -> dict:
+    """The dict of a 200 body, or a plain :class:`TelegramError`.
+
+    The error paths are already guarded (:func:`_safe_detail`,
+    :func:`_safe_retry_after`); success bodies stayed unguarded, and a proxy
+    or captive portal answering ``200`` with ``null``, ``[]`` or a string
+    escaped as ``AttributeError`` on ``.get`` - killing whatever thread
+    called ``send``, ``getUpdates`` or ``download``.
+    """
+    body = resp.json()
+    if not isinstance(body, dict):
+        raise TelegramError(f"{method} returned a malformed body ({type(body).__name__})")
+    return body
 
 
 def _safe_detail(resp) -> str:
@@ -139,11 +184,11 @@ class Telegram:
             timeout=timeout + 15,
         )
         if resp.status_code == 409:
-            raise TelegramError(
+            raise TelegramConflictError(
                 "Conflict: another instance is polling this bot token. Stop the other process."
             )
         resp.raise_for_status()
-        body = resp.json()
+        body = _ok_body(resp, "getUpdates")
         result = body.get("result", [])
         return result if isinstance(result, list) else []
 
@@ -151,7 +196,7 @@ class Telegram:
 
     def send(self, chat_id: str, text: str, reply_markup: dict | None = None) -> int | None:
         """Send text, splitting it across messages if Telegram would reject it."""
-        text = self.redact(text)
+        text = sanitize(self.redact(text))
         last_id = None
         for chunk in split_message(text, self.max_chunk):
             last_id = self._send_chunk(chat_id, chunk, reply_markup)
@@ -186,7 +231,8 @@ class Telegram:
                 raise TelegramError(
                     f"sendMessage failed ({resp.status_code}): {resp.text[:200]}"
                 )
-            return (resp.json().get("result") or {}).get("message_id")
+            result = _ok_body(resp, "sendMessage").get("result") or {}
+            return result.get("message_id") if isinstance(result, dict) else None
         raise TelegramError("Still rate limited after 4 attempts")
 
     def edit(
@@ -202,7 +248,7 @@ class Telegram:
         Returns False when the edit was skipped as too frequent or when the new
         text is identical, which are both normal and not worth logging loudly.
         """
-        text = self.redact(text)
+        text = sanitize(self.redact(text))
         key = f"{chat_id}:{message_id}"
         now = time.monotonic()
         # While the server's named retry_after window is open, do not even
@@ -360,7 +406,8 @@ class Telegram:
             raise TelegramError("could not reach Telegram to look up that file") from exc
         if resp.status_code >= 400:
             raise TelegramError(f"getFile failed ({resp.status_code}): {resp.text[:160]}")
-        file_path = (resp.json().get("result") or {}).get("file_path")
+        result = _ok_body(resp, "getFile").get("result")
+        file_path = result.get("file_path") if isinstance(result, dict) else None
         if not file_path:
             raise TelegramError("Telegram returned no file_path")
 
@@ -391,8 +438,10 @@ def _utf16_len(text: str) -> int:
 
     The Bot API limits messages in UTF-16 code units, so an emoji costs two
     and a message of 4096 code points can be 8000 units and get rejected.
+    ``surrogatepass`` keeps a lone surrogate from raising, so a text that
+    slipped past :func:`sanitize` is counted instead of crashing the split.
     """
-    return len(text.encode("utf-16-le")) // 2
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
 def _prefix_within(text: str, budget: int) -> tuple[int, int]:
