@@ -45,46 +45,60 @@ def worker_loop(bridge) -> None:
         # turn worker's "pop worker + drain backlog" section: check-then-act
         # used to straddle the turn end, so a message could be appended to a
         # backlog tuple that had already been drained and was never sent.
-        queued = False
-        busy = False
-        with bridge._lock:
-            busy = bridge._chat_busy(chat_id)
-            if busy:
-                backlog = bridge._backlog.setdefault(chat_id, [])
-                if len(backlog) < MAX_BACKLOG:
-                    backlog.append((chat_id, text, files))
-                    queued = True
-        if not busy:
-            pass
-        elif queued:
-            # /delivery promises queueing, so hold the message rather than
-            # making the user retype it - and say so, because a silently
-            # delayed message looks like a dropped one.
-            bridge.send(
-                chat_id,
-                "! Queued - I am still working on the previous message.",
-            )
-            bridge.work.task_done()
-            continue
-        else:
-            bridge.send(chat_id, "! Backlog full; send that again once I finish.")
-            bridge.work.task_done()
-            continue
+        try:
+            queued = False
+            busy = False
+            with bridge._lock:
+                busy = bridge._chat_busy(chat_id)
+                if busy:
+                    backlog = bridge._backlog.setdefault(chat_id, [])
+                    if len(backlog) < MAX_BACKLOG:
+                        backlog.append((chat_id, text, files))
+                        queued = True
+            if not busy:
+                pass
+            elif queued:
+                # /delivery promises queueing, so hold the message rather than
+                # making the user retype it - and say so, because a silently
+                # delayed message looks like a dropped one.
+                bridge.send(
+                    chat_id,
+                    "! Queued - I am still working on the previous message.",
+                )
+                continue
+            else:
+                bridge.send(chat_id, "! Backlog full; send that again once I finish.")
+                continue
 
-        # Register before starting: the thread sets its own identity on
-        # entry, so between .start() and that assignment a second prompt
-        # for the same chat would look idle and run concurrently.
-        placeholder = threading.current_thread()
-        with bridge._lock:
-            bridge._workers[chat_id] = placeholder
-        thread = threading.Thread(
-            target=bridge._turn_worker,
-            args=(chat_id, text, files),
-            name=f"turn-{chat_id}",
-            daemon=True,
-        )
-        thread.start()
-        bridge.work.task_done()
+            # Register before starting: the thread sets its own identity on
+            # entry, so between .start() and that assignment a second prompt
+            # for the same chat would look idle and run concurrently.
+            placeholder = threading.current_thread()
+            with bridge._lock:
+                bridge._workers[chat_id] = placeholder
+            thread = threading.Thread(
+                target=bridge._turn_worker,
+                args=(chat_id, text, files),
+                name=f"turn-{chat_id}",
+                daemon=True,
+            )
+            thread.start()
+        except Exception:
+            # The other background loops guard their bodies; this dispatcher
+            # is the one thread with no watchdog to restart it, so an
+            # unguarded raise here used to park every queued prompt forever
+            # while the bot still answered /status. Count the item done and
+            # keep dispatching.
+            log.exception("Turn dispatch failed for %s", chat_id)
+            bridge.health.worker_alive = True
+            # A failure after the placeholder registration (a thread limit
+            # refusing .start()) leaves a marker that looks busy forever.
+            with bridge._lock:
+                stale = bridge._workers.get(chat_id)
+                if stale is threading.current_thread():
+                    bridge._workers.pop(chat_id, None)
+        finally:
+            bridge.work.task_done()
 
 
 def chat_busy(bridge, chat_id: str) -> bool:

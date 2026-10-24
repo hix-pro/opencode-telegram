@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,7 +92,11 @@ def store(
 ) -> Attachment:
     """Download an attachment into the cache and describe it for the agent."""
     ensure_cache_dir(cache)
-    destination = cache / f"{int(time.time())}-{name}"
+    # Two attachments can arrive in one long-poll batch within the same
+    # clock second, and every unnamed photo is "photo.jpg": a pure timestamp
+    # name let the second download overwrite the file the first queued
+    # prompt still referenced. The short uuid suffix makes them unique.
+    destination = cache / f"{int(time.time())}-{uuid.uuid4().hex[:8]}-{name}"
     telegram.download(file_id, destination)
     try:
         destination.chmod(0o600)

@@ -67,8 +67,13 @@ def handle_update(bridge, update: dict) -> None:
     # translation.
     text = keyboards.from_menu(text)
 
-    if bridge.abort_flag(chat_id).is_set() and not text.startswith("/abort"):
-        bridge.abort_flag(chat_id).clear()
+    # A standing abort intent stays armed while a turn is actually running:
+    # clearing on any message used to silently cancel an interrupt whose API
+    # call had failed, so the turn the user tried to stop kept running. The
+    # flag is wiped only once nothing runs any more-or an explicit /abort.
+    abort = bridge.abort_flag(chat_id)
+    if abort.is_set() and not text.startswith("/abort") and not bridge._chat_busy(chat_id):
+        abort.clear()
 
     try:
         ctx = bridge.context(chat_id)
@@ -229,28 +234,30 @@ def approve_pending(bridge, chat_id: str) -> None:
     bridge._reply_permission(chat_id, str(request["id"]), "once", request)
 
 
-def stop_turn(bridge, chat_id: str) -> None:
-    """Interrupt whatever is running here - the typing-free /abort.
+def stop_turn(bridge, chat_id: str) -> str:
+    """Interrupt whatever is running here - the shared /abort.
 
     Fires only when a turn is actually running: arming the abort flag on
     an idle chat used to kill the *next* turn - often a scheduled job - the
-    moment it started, looking like a random cancellation.
+    moment it started, looking like a random cancellation. Returns the
+    outcome line so the typed /abort, the keyboard button and the 👎
+    reaction all report identically.
     """
     session = bridge.state.session(chat_id)
     if not session:
-        bridge.send(chat_id, "Nothing is running.")
-        return
+        return "Nothing is running."
     if not bridge._chat_busy(chat_id):
-        bridge.send(chat_id, "Nothing is running.")
-        return
+        return "Nothing is running."
     bridge.abort_flag(chat_id).set()
     try:
         bridge.api.interrupt_session(session)
     except ApiError as exc:
         log.warning("Interrupt failed: %s", exc)
-        bridge.send(chat_id, f"! Could not interrupt the turn: {exc.message}")
-        return
-    bridge.send(chat_id, "Stopping - the turn is being interrupted.")
+        # The abort flag deliberately stays armed: the turn pump honours it
+        # at its next poll (about two seconds away), so a refused interrupt
+        # is deferred, not cancelled.
+        return f"! Could not interrupt the turn: {exc.message}; the pump aborts it shortly."
+    return "Stopping - the turn is being interrupted."
 
 
 def handle_attachment(

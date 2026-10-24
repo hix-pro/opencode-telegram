@@ -4,18 +4,39 @@
 # Keeps your .env and state file by default - they hold your credentials,
 # schedules and permission rules, and this script should not delete them
 # because you asked for the service to go away. Pass --purge to delete
-# everything, including backups of the OpenCode server data.
+# everything, including backups of the OpenCode server data, and
+# --purge-server (in any position) to also remove the OpenCode server
+# service itself.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_NAME=opencode-telegram-bridge.service
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PURGE=0
-[ "${1:-}" = "--purge" ] && PURGE=1
-
+PURGE_SERVER=0
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
+for arg in "$@"; do
+    case "$arg" in
+        --purge) PURGE=1 ;;
+        --purge-server) PURGE_SERVER=1 ;;
+        -h|--help)
+            echo "Usage: bash uninstall.sh [--purge] [--purge-server]"
+            echo
+            echo "  --purge          also delete .env, state, logs and attachments"
+            echo "  --purge-server   also remove the OpenCode server service"
+            echo
+            echo "Flags may be given in any order."
+            exit 0
+            ;;
+        *)
+            red "unknown option: $arg"
+            echo "Try: bash uninstall.sh --help"
+            exit 1
+            ;;
+    esac
+done
 
 echo "Uninstalling the OpenCode Telegram bridge"
 
@@ -49,13 +70,18 @@ else
     info "kept: .env, .state.json, bridge.log"
 fi
 
-# The source tree and the OpenCode server itself are left alone. Removing the
-# server is a separate, deliberate act - run --purge-server if you truly mean it.
-if [ "${2:-}" = "--purge-server" ]; then
+# The source tree and the OpenCode server itself are left alone unless
+# --purge-server was passed. Removing the server is a separate, deliberate
+# act - you truly mean it.
+if [ "$PURGE_SERVER" = "1" ]; then
     systemctl --user disable --now opencode-server.service >/dev/null 2>&1 || true
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/opencode-server.service"
     systemctl --user daemon-reload
     info "OpenCode server service also removed"
 fi
 
-green "Done. The OpenCode server and your sessions were left untouched."
+if [ "$PURGE_SERVER" = "1" ]; then
+    green "Done. Your sessions were left untouched."
+else
+    green "Done. The OpenCode server and your sessions were left untouched."
+fi

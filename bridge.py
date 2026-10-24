@@ -54,7 +54,7 @@ from bridgekit.policy import Policy
 from bridgekit.progress import TurnProgress
 from bridgekit.schedule import ScheduleStore
 from bridgekit.state import State
-from bridgekit.telegram import Telegram, TelegramError
+from bridgekit.telegram import Telegram, TelegramConflictError, TelegramError
 
 log = logging.getLogger("bridge")
 
@@ -279,6 +279,7 @@ class Bridge:
             policy=self.policy,
             health=self.health_report(),
             on_permission_answered=lambda request_id: self._requests.pop(request_id, None),
+            stop_turn=lambda: updates.stop_turn(self, chat_id),
             schedules=self.schedules,
             macros=dict(self.state.macros),
             respond=lambda text: self.send(chat_id, text),
@@ -354,9 +355,20 @@ class Bridge:
             try:
                 updates = self.telegram.get_updates(offset, timeout=30)
             except TelegramError as exc:
-                log.error("%s", exc)
-                self.fatal = str(exc)
-                return
+                if isinstance(exc, TelegramConflictError):
+                    # 409 is a second poller on the same token: retrying just
+                    # fills the journal, so exit non-zero and let systemd's
+                    # start limit show the failure.
+                    log.error("%s", exc)
+                    self.fatal = str(exc)
+                    return
+                # Every other Telegram-level problem - a malformed 200 body
+                # from a proxy, an unexpected API hiccup - is an outage, not
+                # a reason to die: back off and try again. The message is
+                # built by this client and never carries the token.
+                log.warning("getUpdates failed; retrying in 5s: %s", exc)
+                time.sleep(5)
+                continue
             except requests.HTTPError as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", 0)
                 if status in (401, 403, 409):
@@ -441,7 +453,9 @@ class Bridge:
         updates.approve_pending(self, chat_id)
 
     def _stop_turn(self, chat_id: str) -> None:
-        updates.stop_turn(self, chat_id)
+        # stop_turn returns the outcome so the typed /abort can share it verbatim;
+        # this wrapper shows it for the button and the 👎 reaction.
+        self.send(chat_id, updates.stop_turn(self, chat_id))
 
     def _handle_attachment(
         self, chat_id: str, message: dict, file_id: str, name: str, kind: str
@@ -514,10 +528,18 @@ class Bridge:
     def _prune_seen(self, seen: list[str]) -> None:
         watchers.prune_seen(self, seen)
 
+    def _reconcile_requests(self, fresh_ids: set[str]) -> None:
+        watchers.reconcile_requests(self, fresh_ids)
+
     def _reply_permission(
-        self, chat_id: str, request_id: str, decision: str, request: dict | None = None
-    ) -> None:
-        watchers.reply_permission(self, chat_id, request_id, decision, request)
+        self,
+        chat_id: str,
+        request_id: str,
+        decision: str,
+        request: dict | None = None,
+        notify: bool = True,
+    ) -> bool:
+        return watchers.reply_permission(self, chat_id, request_id, decision, request, notify)
 
     def _find_request(self, request_id: str) -> dict | None:
         return watchers.find_request(self, request_id)

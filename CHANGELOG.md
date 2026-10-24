@@ -1,5 +1,59 @@
 # Changelog
 
+## v2.3.5 — 2026-10-24
+
+Reliability audit: every fix below comes out of a full code review and has a
+regression test that failed before its fix.
+
+### Fixed
+
+- **A turn failure no longer takes down turn dispatch.** The turn-dispatcher
+  thread is the only background loop without a watchdog, and one unguarded
+  raise (a transport hiccup, a thread-limit `can't start new thread`) used to
+  park every queued prompt forever while the bot still answered `/status`.
+  The loop now guards its body, keeps dispatching, and logs the failure.
+- **A `200` JSON body that is not an object** (a captive portal or gateway
+  answering `null` or a string) used to escape as `AttributeError` from
+  `getUpdates`, `sendMessage` and `getFile` and kill the calling thread.
+  Those paths now raise a `TelegramError`, and only a true poll conflict
+  (409) is fatal; other Telegram-level poll failures back off and retry.
+- **A failed interrupt keeps its abort intent.** The abort flag used to be
+  wiped by the next ordinary message even when the interrupt API call had
+  failed, silently letting the turn the user tried to stop keep running.
+  The flag now survives while the turn is actually busy and is cleared once
+  nothing runs; the typed `/abort` shares the same path as the ⏹ button and
+  the 👎 reaction (busy check, flag, pump retry) and reports failures
+  instead of claiming "Interrupt sent."
+- **A failed auto-approval answer is retried, not forgotten.** The watcher
+  used to mark a pending request as seen even when answering it failed, so
+  the agent stayed blocked until the prompt timeout. Repeated failures are
+  logged and retried every tick; the chat hears about the first failure and
+  then at most once a minute.
+- **Pending permission requests are no longer evicted by cache churn.** The
+  bounded request cache trimmed its oldest half regardless of pending
+  state, which de-scoped a still-visible card: a 👍 on it could then approve
+  a different request. Reconciliation now runs only after a fully-polled
+  tick and drops ids the server no longer lists.
+- **Two attachments sent within the same second no longer collide.** The
+  cache filename carried only a seconds timestamp, so the second photo
+  overwrote the file the first queued prompt still referenced. Filenames
+  now embed a short uuid.
+- **Lone surrogates from a quoted binary artifact** no longer turn the final
+  delivery into a generic "the turn failed": they are replaced with U+FFFD
+  before anything is sent, and UTF-16 length counting no longer raises.
+- **`uninstall.sh` parses flags in any position.** `--purge-server` only
+  worked as the second argument, so `uninstall.sh --purge-server` was
+  silently ignored; unknown flags are now rejected with `--help` advice.
+
+### Documentation
+
+- README: `/stats` is the server's aggregate (not per-session) usage,
+  `/auto` documents `off`, `/worktrees` documents `new`/`rm`, `/web` is
+  listed, and the thread table counts five background threads plus the
+  per-turn threads.
+- `docs/HARDENING.md` now matches the rendered sandbox: it grants the whole
+  `~/.cache` (shared pip/npm/browser caches) rather than `~/.cache/opencode`.
+
 ## v2.3.4 — 2026-10-23
 
 Security hygiene and project operations.

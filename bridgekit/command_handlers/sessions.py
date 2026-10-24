@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .. import commands as core
 from .. import keyboards
-from ..api import OpenCode
+from ..api import ApiError, OpenCode
 from ..config import ConfigError
 from ..formatting import ago, basename, bullet_list, cost_line, session_line, short_id
 
@@ -203,8 +203,18 @@ def cmd_compact(ctx: core.Context) -> str:
 
 @core.command("abort", "Stop the running turn", group="Session")
 def cmd_abort(ctx: core.Context) -> str:
+    # The shared path is what the ⏹ button and the 👎 reaction use (busy
+    # check, abort-flag arming, retry via the turn pump). The typed command
+    # used to fire a bare interrupt and answer "Interrupt sent." even when
+    # the call had failed.
+    if ctx.stop_turn is not None:
+        return ctx.stop_turn()
+    # Embedded use without a bridge: still tell the truth about a failure.
     session = ctx.require_session()
-    ctx.api.interrupt_session(session)
+    try:
+        ctx.api.interrupt_session(session)
+    except ApiError as exc:
+        raise core.CommandError(f"Could not interrupt: {exc.message}") from exc
     return "Interrupt sent."
 
 
