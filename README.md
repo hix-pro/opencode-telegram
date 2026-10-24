@@ -503,6 +503,10 @@ only the files and credentials it needs.
 
 ## Requirements
 
+- **Linux with systemd.** The installer generates systemd *user* units and a
+  watchdog timer on it, and the watchdog needs systemd's timer units. Tested
+  only on Linux: CI runs on Ubuntu, and the reference deployment is
+  Ubuntu 24.04. macOS and Windows are untested.
 - Python 3.10+ and `requests`
 - An OpenCode server reachable at `OPENCODE_URL`
 - A server password: `opencode service set password "<secret>"`
