@@ -55,9 +55,12 @@ rm -f "$UNIT_DIR/opencode-watchdog.service" "$UNIT_DIR/opencode-watchdog.timer"
 
 systemctl --user disable "$UNIT_NAME" >/dev/null 2>&1 || true
 rm -f "$UNIT_DIR/$UNIT_NAME"
-# Drop-in installed by `install.sh --harden-server`; the server itself stays.
+# Drop-ins rendered by `install.sh --harden-bridge` / `--harden-server`;
+# the server itself stays.
 rm -f "$UNIT_DIR/opencode-server.service.d/50-hardening.conf"
 rmdir "$UNIT_DIR/opencode-server.service.d" 2>/dev/null || true
+rm -f "$UNIT_DIR/opencode-telegram-bridge.service.d/50-hardening.conf"
+rmdir "$UNIT_DIR/opencode-telegram-bridge.service.d" 2>/dev/null || true
 systemctl --user daemon-reload
 systemctl --user reset-failed "$UNIT_NAME" >/dev/null 2>&1 || true
 info "service unit removed"

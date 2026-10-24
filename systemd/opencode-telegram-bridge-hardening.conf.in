@@ -1,0 +1,43 @@
+# Sandbox for the bridge process itself - the token-holding half.
+#
+# The bridge faces Telegram's untrusted traffic around the clock and carries
+# the bot token; the OpenCode server (the execution surface behind /sh and
+# the agent's tools) already receives the stronger sandbox from
+# `--harden-server`. This drop-in gives the bridge the same OS-level footing
+# so a parsing bug or a poisoned dependency here cannot reach the rest of
+# your home.
+#
+# The bridge only ever writes its state, logs, heartbeat and attachment
+# cache - all inside the repo directory by default - plus shared /tmp. It
+# never writes into the project roots (that is the server's job), so those
+# are deliberately NOT granted as writable here; reads keep working through
+# ProtectHome=read-only.
+#
+# Render this drop-in with: bash install.sh --harden-bridge
+# Re-run after changing the repo location or STATE_FILE/LOG_FILE.
+
+[Service]
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+@RW_PATHS@
+# Shared temp: Python's tempfile lives here and attachment downloads may
+# stage there. PrivateTmp would hide the artifacts, so keep the real /tmp.
+ReadWritePaths=/tmp
+ReadWritePaths=/var/tmp
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
