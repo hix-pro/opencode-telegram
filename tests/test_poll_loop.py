@@ -218,3 +218,32 @@ def test_every_poll_iteration_stamps_the_heartbeat(tmp_path):
     heartbeat = tmp_path / ".bridge-heartbeat"
     assert heartbeat.exists(), "the watchdog needs a stamp even without updates"
     assert abs(time.time() - heartbeat.stat().st_mtime) < 30
+
+
+def test_dispatch_is_bracketed_by_heartbeat_touches(tmp_path):
+    """A synchronous handler (/selftest, /search) can run for minutes on the
+    poll thread; the per-iteration stamp alone went stale mid-command and the
+    watchdog restarted a healthy bridge. Touch before and after every
+    dispatch, so the file never ages past the running handler."""
+    bridge = build_bridge(tmp_path, BatchTelegram([[MSG]]))
+    bridge.telegram.stopper = bridge.stop_event
+
+    sequence: list[str] = []
+    real_touch = bridge._touch_heartbeat
+    real_handle = bridge._handle_update
+
+    def touching_handle(update):
+        sequence.append("handle")
+        return real_handle(update)
+
+    def counted_touch():
+        sequence.append("touch")
+        return real_touch()
+
+    bridge._touch_heartbeat = counted_touch
+    bridge._handle_update = touching_handle
+    bridge.poll_loop()
+
+    # Iteration stamp, then a touch either side of the handler itself, then
+    # the next iteration's stamp before the loop stops.
+    assert sequence == ["touch", "touch", "handle", "touch", "touch"]

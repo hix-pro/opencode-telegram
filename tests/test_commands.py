@@ -395,18 +395,19 @@ def test_help_lists_every_command(ctx):
 
 
 def test_sh_reports_when_the_server_kills_a_long_command(ctx):
-    """The server reaps shells after about a second, so waiting longer is
-    pointless - say so and point at the alternative."""
+    """A reaped shell is gone from the shell list with no sentinel and no
+    output - say so and point at the alternative."""
     # A fake whose output never carries the completion sentinel, as a reaped
-    # shell would.
+    # shell would; the shell is no longer listed either.
     ctx.api.shell_output_data = {"output": "", "status": "running"}
     ctx.api.echo_sentinel = False
+    ctx.api.shells = []
     import bridgekit.commands as commands
 
     original = commands.SHELL_PROBE
     commands.SHELL_PROBE = 0.05
     try:
-        with pytest.raises(CommandError, match="stopped that command"):
+        with pytest.raises(CommandError, match="nothing to show"):
             run(ctx, "/sh sleep 30")
     finally:
         commands.SHELL_PROBE = original
@@ -458,6 +459,7 @@ def test_sh_with_respond_reports_failures(ctx, monkeypatch):
     ctx.respond = sent.append
     ctx.api.shell_output_data = {"output": "", "status": "running"}
     ctx.api.echo_sentinel = False
+    ctx.api.shells = []
     run(ctx, "/sh sleep 30")
     assert _await_delivery(sent)
     assert sent[0].startswith("!")
@@ -503,6 +505,117 @@ def test_sh_reports_the_exit_code(ctx):
 def test_sh_reports_success_with_exit_zero(ctx):
     reply = run(ctx, "/sh echo hi")
     assert "[exit 0]" in reply
+
+
+def test_a_long_command_that_prints_early_keeps_polling_for_the_sentinel(ctx, monkeypatch):
+    """A command that prints something and then runs past the probe used to
+    come back after 3s with truncated output and no exit code: "no sentinel
+    yet" was read as "the server reaped it". The shell list says the shell is
+    still alive, so the runner keeps polling until the real end."""
+    from conftest import FakeAPI
+
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+
+    class LongRunning(FakeAPI):
+        polls = 0
+
+        def shell_output(self, shell_id, directory=None):
+            self.polls += 1
+            if self.polls < 3:
+                return {"output": "starting...\n", "status": "running"}
+            return {
+                "output": f"starting...\ndone\n{self._pending_token} 0\n",
+                "status": "completed",
+            }
+
+    ctx.api = LongRunning()
+    reply = run(ctx, "/sh slow-but-chatty build")
+
+    assert "starting..." in reply
+    assert "done" in reply
+    assert "[exit 0]" in reply
+    # The shell-list check is what kept it waiting.
+    assert any(call[0] == "list_shells" for call in ctx.api.calls)
+
+
+def test_a_shell_that_vanishes_with_partial_output_still_returns_it(ctx, monkeypatch):
+    """When the server genuinely reaps the shell - it is gone from the list -
+    the partial output is all there is, as before."""
+    from conftest import FakeAPI
+
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+
+    class Reaped(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self.shells = []
+
+        def shell_output(self, shell_id, directory=None):
+            return {"output": "starting...\n", "status": "running"}
+
+    ctx.api = Reaped()
+    reply = run(ctx, "/sh half-finished job")
+
+    assert "starting..." in reply
+
+
+def test_a_silent_command_still_listed_is_not_reported_as_reaped(ctx, monkeypatch):
+    """No output and no sentinel is not proof the server reaped anything:
+    while the shell is still listed the runner waits (to the tightened
+    deadline here) instead of erroring after the 3s probe."""
+    from conftest import FakeAPI
+
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+    monkeypatch.setattr("bridgekit.commands.SHELL_TIMEOUT", 0.3)
+
+    class Quiet(FakeAPI):
+        def shell_output(self, shell_id, directory=None):
+            return {"output": "", "status": "running"}
+
+    ctx.api = Quiet()
+    reply = run(ctx, "/sh silent-but-alive")
+
+    assert "(no output)" in reply
+
+
+def test_when_the_shell_list_fails_the_old_probe_heuristic_applies(ctx, monkeypatch):
+    """A failing list call must not turn into a full-deadline wait: fall back
+    to the old probe-only behaviour, which returned partial output."""
+    from conftest import FakeAPI
+
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+
+    class DeadList(FakeAPI):
+        def list_shells(self, directory=None):
+            raise ApiError(500, "list exploded")
+
+        def shell_output(self, shell_id, directory=None):
+            return {"output": "starting...\n", "status": "running"}
+
+    ctx.api = DeadList()
+    reply = run(ctx, "/sh prints then hangs")
+
+    assert "starting..." in reply
+
+
+def test_when_the_shell_list_fails_an_outputless_command_still_errors(ctx, monkeypatch):
+    """Same fallback, empty-output branch: the friendly error still fires."""
+    from conftest import FakeAPI
+
+    monkeypatch.setattr("bridgekit.commands.SHELL_PROBE", 0.05)
+
+    class DeadList(FakeAPI):
+        def __init__(self):
+            super().__init__()
+            self.echo_sentinel = False
+            self.shell_output_data = {"output": "", "status": "running"}
+
+        def list_shells(self, directory=None):
+            raise ApiError(500, "list exploded")
+
+    ctx.api = DeadList()
+    with pytest.raises(CommandError, match="nothing to show"):
+        run(ctx, "/sh silent job")
 
 
 def test_alert_rejects_negative_thresholds(ctx):

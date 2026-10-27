@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -134,6 +135,10 @@ class Telegram:
         self.timeout = timeout
         self.edit_interval = edit_interval
         self._http = requests.Session()
+        # Throttle bookkeeping (edit timestamps, health counters, the 429
+        # penalty window) is touched by the main thread and by per-chat turn
+        # threads. One lock guards it; the network calls below never hold it.
+        self._throttle_lock = threading.Lock()
         self._last_edit: dict[str, float] = {}
         # Health counters: a silent edit failure can lose a reply, so it is
         # counted rather than left to the debug log.
@@ -251,12 +256,14 @@ class Telegram:
         text = sanitize(self.redact(text))
         key = f"{chat_id}:{message_id}"
         now = time.monotonic()
+        with self._throttle_lock:
+            last = self._last_edit.get(key, 0.0)
+            penalty_until = self._penalty_until
         # While the server's named retry_after window is open, do not even
         # hit the wire: a POST there just earns another 429 and re-arms the
         # window. The _last_edit gate below keeps the ordinary spacing.
-        if not force and now < self._penalty_until:
+        if not force and now < penalty_until:
             return False
-        last = self._last_edit.get(key, 0.0)
         if not force and now - last < self.effective_interval():
             return False
 
@@ -280,16 +287,19 @@ class Telegram:
             # requests.RequestException because the built-in ConnectionError
             # is not a subclass of it, and requests errors subclass IOError.
             # The excuse text embeds the tokened request URL - redact it.
-            self.edit_failures += 1
+            with self._throttle_lock:
+                self.edit_failures += 1
             log.warning("editMessageText transport error: %s", self.redact(exc))
             return False
         finally:
-            self._last_edit[key] = time.monotonic()
-            self._evict_edit_times()
+            with self._throttle_lock:
+                self._last_edit[key] = time.monotonic()
+                self._evict_edit_times()
 
         if resp.status_code == 429:
             retry_after = _safe_retry_after(resp)
-            self.rate_limited += 1
+            with self._throttle_lock:
+                self.rate_limited += 1
             # The old deadline started from a timestamp captured before the
             # request - a slow request ate into the penalty. Compute it now.
             self._record_penalty(retry_after)
@@ -301,13 +311,17 @@ class Telegram:
             # screen. Anything else matters, because the final reply may be
             # delivered by edit and a lost edit is a lost answer.
             if "not modified" not in detail:
-                self.edit_failures += 1
+                with self._throttle_lock:
+                    self.edit_failures += 1
                 log.warning("editMessageText failed (%s): %s", resp.status_code, detail)
             return False
         return True
 
     def _evict_edit_times(self) -> None:
-        """Drop throttle entries for messages nobody will edit again."""
+        """Drop throttle entries for messages nobody will edit again.
+
+        Called with the throttle lock held: it rebuilds the shared dict.
+        """
         if len(self._last_edit) < 64:
             return
         cutoff = time.monotonic() - EDIT_MEMORY_SECONDS
@@ -315,8 +329,9 @@ class Telegram:
 
     def _record_penalty(self, retry_after: float) -> None:
         """Widen the no-edit window to the server's own retry_after."""
-        after = time.monotonic() + max(0.1, float(retry_after))
-        self._penalty_until = max(self._penalty_until, after)
+        with self._throttle_lock:
+            after = time.monotonic() + max(0.1, float(retry_after))
+            self._penalty_until = max(self._penalty_until, after)
 
     def effective_interval(self) -> float:
         """Current edit spacing, widened to the server's retry_after while
@@ -327,9 +342,11 @@ class Telegram:
         and every edit in the chat shares the chat-wide limit.
         """
         now = time.monotonic()
-        if now >= self._penalty_until:
+        with self._throttle_lock:
+            penalty_until = self._penalty_until
+        if now >= penalty_until:
             return self.edit_interval
-        return max(self.edit_interval, self._penalty_until - now)
+        return max(self.edit_interval, penalty_until - now)
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         payload: dict = {"callback_query_id": callback_id}

@@ -241,20 +241,48 @@ def run_and_capture(ctx: core.Context, command: str, cwd: str, timeout: int) -> 
             code = tail.split(" ", 1)[0] if tail else ""
             return f"{body}\n[exit {code}]" if code.isdigit() else body
 
-        # The server reaps a shell that runs too long: no sentinel ever
-        # appears, and nothing is left to wait for. Give it a moment, then say
-        # so rather than blocking for the full timeout.
+        # The server may reap a shell that runs too long: no sentinel ever
+        # appears and nothing is left to wait for. But a command that is
+        # merely still running has no sentinel yet either, so "no sentinel"
+        # alone cannot distinguish reaped from working - a 5s command that
+        # had printed something used to come back after the 3s probe with
+        # truncated output and no exit code. Confirm with the shell list
+        # before declaring the command lost.
         if token not in output and time.time() - started >= core.SHELL_PROBE:
-            if output.strip():
-                return output.rstrip("\n")
-            raise core.CommandError(
-                "The server stopped that command after about a second, so its "
-                "output cannot be captured.\n"
-                "Send it as a message instead - the agent can run anything, "
-                "however long it takes - or use a command that finishes "
-                "immediately."
-            )
+            gone = _shell_gone(ctx, shell_id, cwd)
+            if gone is not False:
+                # gone is True (the server no longer lists the shell) or
+                # None (the list itself could not be read; fall back to the
+                # old probe-only heuristic rather than trusting an unknown).
+                if output.strip():
+                    return output.rstrip("\n")
+                raise core.CommandError(
+                    "No output was captured and the command did not report "
+                    "completion, so there is nothing to show.\n"
+                    "Send it as a message instead - the agent can run anything, "
+                    "however long it takes - or use a command that finishes "
+                    "immediately."
+                )
 
         if time.time() >= deadline:
             return output.rstrip("\n") or "(no output)"
         time.sleep(0.15)
+
+
+def _shell_gone(ctx: core.Context, shell_id: str, cwd: str) -> bool | None:
+    """True when the server no longer lists *shell_id*, False when it does.
+
+    None when the check itself failed (transport error, malformed payload):
+    the caller then falls back to the old probe-only heuristic instead of
+    treating an unknown answer as "still running" - which would turn a
+    genuinely reaped command into a full-deadline wait.
+    """
+    try:
+        shells = ctx.api.list_shells(directory=cwd)
+        return not any(
+            isinstance(entry, dict) and str(entry.get("id") or "") == shell_id
+            for entry in shells or []
+        )
+    except Exception:
+        log.debug("Shell list check failed for %s", shell_id, exc_info=True)
+        return None

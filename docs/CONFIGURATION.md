@@ -105,9 +105,11 @@ silently ignoring the voice note.
 - `Config.from_env()` reads only the process environment. It does not parse
   `.env` itself; systemd does that for the service, and the foreground example
   above does it for a shell.
-- A `#` preceded by whitespace starts an inline comment, so a copied line such
-  as `PROMPT_TIMEOUT=7200  # two hours` works. A `#` inside a value with no
-  preceding whitespace is preserved.
+- A `#` preceded by whitespace starts an inline comment in an unquoted value,
+  so a copied line such as `PROMPT_TIMEOUT=7200  # two hours` works. A `#`
+  inside a value with no preceding whitespace is preserved. A value that still
+  carries surrounding quotes is passed through verbatim - `"hunter2 # Sekrit"`
+  is one value, never truncated at the ` #`.
 - Booleans accept `1/0`, `true/false`, `yes/no`, and `on/off`, case-insensitively.
 - Paths expand `~`; relative paths are resolved against the process working
   directory.

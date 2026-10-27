@@ -1,5 +1,73 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The command guard now sees long flags.** `rm --recursive /tmp/x` and
+  `git push -f origin main` used to slip past `DEFAULT_DENY` (only short flag
+  clusters like `rm -rf` and the literal `--force` matched), so `all`
+  auto-approval mode would have waved both through. `--force-with-lease`
+  stays blocked, as it always was: the existing `--force` pattern's trailing
+  word boundary already matched inside it. The README's security section and
+  the module docstring now say plainly that the deny-list is best-effort —
+  indirection such as `base64` or shell aliases can evade any regex.
+- **`/sh` no longer mistakes a working command for a reaped one.** The 3s
+  probe treated "output printed + no sentinel yet" as "the server killed the
+  command", so any command longer than 3s that had already printed something
+  came back truncated, with no exit code. The runner now confirms with the
+  shell list (`GET /api/shell`) and keeps polling while the shell is still
+  listed, up to the 60s deadline; if the list call itself fails it falls
+  back to the old probe-only behaviour. The empty-output error no longer
+  claims the server "stopped that command after about a second" — it states
+  only what the code knows.
+- **A long synchronous command can no longer get the bridge killed by the
+  watchdog.** `/selftest` (~220s) and `/search` (~330s worst case) run on the
+  poll thread and outlived the 180s heartbeat limit, so a healthy bridge was
+  restarted mid-command. The heartbeat is now touched around every dispatch
+  in the poll loop, and the watchdog's `DEFAULT_MAX_AGE` rose to 360s.
+- **A corrupted `busy` entry can no longer restart-loop the bridge.** A state
+  file whose busy marker lost its `session` (hand edit, partial write by an
+  older version) passed load validation and then raised KeyError inside
+  `Bridge.start()` on every boot. `_load_v2` now validates and normalises
+  busy entries (dropping unusable ones and repairing the file), and orphan
+  reporting skips a turn without a session instead of raising.
+- **Case-variant sensitive paths are refused.** On case-insensitive
+  filesystems (macOS, Windows) `.SSH`, `ID_RSA` and `.ENV` are the same files
+  as `.ssh`, `id_rsa` and `.env`, but the pathguard compared case-sensitively
+  and let them through. Matching is case-folded now; the `.env.example`
+  exemption stays exact-case, which is the safe direction.
+- **Quoted `.env` values keep their hashes.** Comment stripping cut every
+  unquoted value at ` #`, so `OPENCODE_PASSWORD="hunter2 # Sekrit"` (a value
+  that still carried its quotes) arrived as `hunter2`. Stripping now applies
+  only to unquoted values; a quoted value is passed through verbatim.
+- **The "Always allow" button no longer goes dead on long request ids.**
+  Callback payloads are capped at 64 bytes and were truncated silently, so a
+  long id produced a button that answered "no longer pending" while the agent
+  stayed blocked. The button is omitted when its payload would not round-trip;
+  Allow once and Reject remain.
+- **`/schedule rm` is scoped to the calling chat**, matching the chat-scoped
+  listing: a ref pasted from another conversation's list is no longer
+  deletable, and reports the same friendly not-found message.
+- **Configuration validation closes the silent-absurdity holes.**
+  `MAX_CHUNK` and `PROMPT_TIMEOUT`/`HEADS_UP_AFTER` of 0 or less are rejected
+  at startup (a zero chunk used to split replies into a volley of
+  one-character messages; a zero timeout reported every turn as "gave up
+  waiting"), and `APPROVAL_MODE`/`PROMPT_DELIVERY` are validated against the
+  exact value sets `/auto` and `/delivery` accept, so a typo can no longer
+  silently mean `ask`/`queue` while `/status` says otherwise.
+- **`/model` with an empty provider is refused** with the usage message
+  instead of sending `{"providerID": "", "id": "model"}` to the server and
+  surfacing a raw API error.
+- **Telegram throttle bookkeeping is lock-guarded.** The edit timestamps,
+  health counters and the 429 penalty window were mutated from the main
+  thread and per-chat turn threads without a lock (benign drift; worst case
+  one early edit). One `threading.Lock` now guards them; network calls never
+  hold it.
+- **Files created by a non-systemd run are owner-only.** `main()` sets
+  `umask(0o077)`, so rotated logs and fresh attachment downloads are no
+  longer world-readable outside the systemd units' `UMask=0077`.
+
 ## v2.3.8 — 2026-10-24
 
 Identity, not only permissions: the migration tool for running the whole

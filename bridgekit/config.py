@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .pathguard import reason as sensitive_reason
+from .policy import ALL, ASK, MODES as APPROVAL_MODES, READ
 
 DEFAULT_URL = "http://127.0.0.1:49374"
 MAX_CHUNK = 4096
@@ -45,6 +46,17 @@ def _int_env(source: dict, name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _positive_int(source: dict, name: str, default: int) -> int:
+    """Reject zero and negative counts, for the same reason as
+    :func:`_positive_float`: a MAX_CHUNK of 0 turned every reply into a volley
+    of one-character chunks, and a PROMPT_TIMEOUT of 0 put the deadline in the
+    past so every turn reported "gave up waiting"."""
+    value = _int_env(source, name, default)
+    if value <= 0:
+        raise ConfigError(f"{name} must be greater than 0, got {value}")
+    return value
 
 
 def _positive_float(source: dict, name: str, default: float) -> float:
@@ -105,7 +117,7 @@ def env_file_warning(path: Path) -> str | None:
 
 
 def _strip_inline_comments(source: dict) -> dict:
-    """Drop trailing ``# ...`` comments the way any .env file expects.
+    """Drop trailing ``# ...`` comments from unquoted .env values.
 
     Someone copying a documented line out of .env.example will often uncomment
     it *and* keep the explanation beside it. Without this, ``PROMPT_TIMEOUT``
@@ -113,16 +125,55 @@ def _strip_inline_comments(source: dict) -> dict:
     message about an integer.
 
     Only a ``#`` preceded by whitespace counts, so a password containing a
-    hash - the common case for generated secrets - survives intact.
+    hash - the common case for generated secrets - survives intact. A value
+    that still carries its surrounding quotes is passed through verbatim:
+    whatever put the quotes there decided the whole thing is one value, and
+    stripping the comment from ``"hunter2 # Sekrit"`` used to hand the bridge
+    a silently truncated secret. (A loader that already removed the quotes -
+    systemd's EnvironmentFile - cannot be detected here; in a quoted value a
+    hash never starts a comment anyway.)
     """
     cleaned = {}
     for key, value in source.items():
         if isinstance(value, str) and not value.strip().startswith("#"):
-            match = re.search(r"\s#", value)
-            if match:
-                value = value[: match.start()]
+            stripped = value.strip()
+            quoted = (
+                len(stripped) >= 2
+                and stripped[0] == stripped[-1]
+                and stripped[0] in ("'", '"')
+            )
+            if not quoted:
+                match = re.search(r"\s#", value)
+                if match:
+                    value = value[: match.start()]
         cleaned[key] = value
     return cleaned
+
+
+def _prompt_delivery(source: dict) -> str:
+    """Same value set /delivery accepts, case-insensitively."""
+    raw = source.get("PROMPT_DELIVERY", "").strip().lower()
+    if not raw:
+        return "queue"
+    if raw not in ("queue", "steer"):
+        raise ConfigError(f"PROMPT_DELIVERY must be queue or steer, got {raw!r}")
+    return raw
+
+
+def _approval_mode(source: dict) -> str:
+    """Same value set /auto accepts, case-insensitively; a typo'd mode used
+    to fall back to `ask` silently while /status described it as chosen."""
+    raw = source.get("APPROVAL_MODE", "").strip().lower()
+    if not raw:
+        return ASK
+    # /auto's aliases: they mean the same thing there, so they mean it here.
+    mode = {"off": ASK, "on": READ, "full": ALL}.get(raw, raw)
+    if mode not in APPROVAL_MODES:
+        raise ConfigError(
+            f"APPROVAL_MODE must be one of ask, read, all (or off, on, full), "
+            f"got {raw!r}"
+        )
+    return mode
 
 
 @dataclass(frozen=True)
@@ -323,20 +374,20 @@ class Config:
             password=password,
             default_dir=str(default_dir.resolve()),
             state_file=state_file,
-            prompt_timeout=_int_env(source, "PROMPT_TIMEOUT", 7200),
-            heads_up_after=_int_env(source, "HEADS_UP_AFTER", 240),
-            prompt_delivery=(source.get("PROMPT_DELIVERY", "").strip().lower() or "queue"),
+            prompt_timeout=_positive_int(source, "PROMPT_TIMEOUT", 7200),
+            heads_up_after=_positive_int(source, "HEADS_UP_AFTER", 240),
+            prompt_delivery=_prompt_delivery(source),
             edit_resend=_bool_env(source, "EDIT_RESEND", False),
             permission_poll=_positive_float(source, "PERMISSION_POLL_INTERVAL", 5.0),
             allowed_roots=roots,
             max_output=_int_env(source, "MAX_OUTPUT", 3500),
             # Telegram rejects anything above 4096 outright, and split_message
             # would build chunks it then refuses to send.
-            max_chunk=min(_int_env(source, "MAX_CHUNK", MAX_CHUNK), MAX_CHUNK),
+            max_chunk=min(_positive_int(source, "MAX_CHUNK", MAX_CHUNK), MAX_CHUNK),
             stream_enabled=_bool_env(source, "STREAM_ENABLED", True),
             edit_interval=_positive_float(source, "EDIT_INTERVAL", 2.0),
             poll_messages=_positive_float(source, "POLL_MESSAGES", 2.0),
-            approval_mode=(source.get("APPROVAL_MODE", "").strip().lower() or "ask"),
+            approval_mode=_approval_mode(source),
             auto_deny=_bool_env(source, "AUTO_DENY", True),
             attachment_max_age_hours=_float_env(source, "ATTACHMENT_MAX_AGE_HOURS", 24.0),
             cost_alert=_float_env(source, "COST_ALERT", 0.0),

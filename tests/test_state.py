@@ -118,6 +118,84 @@ def test_orphaned_turns_are_reported(tmp_path):
     assert orphans[0][1]["session"] == "ses_one"
 
 
+def test_a_busy_entry_without_a_session_is_dropped(tmp_path):
+    """A hand-edited or partially written busy marker used to raise KeyError
+    inside _report_orphaned_turns on every boot - a systemd restart loop.
+    It is dropped instead, and the corruption is cleaned off disk."""
+    path = tmp_path / ".state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "chats": {
+                    "42": {
+                        "session": "ses_one",
+                        "busy": {"started": 1.0},
+                    }
+                },
+            }
+        )
+    )
+    state = State(path, "/home/demo")
+    state.load()
+
+    assert state.session("42") == "ses_one"
+    assert state.busy("42") is None
+    assert state.orphaned_turns() == []
+    stored = json.loads(path.read_text())
+    assert stored["chats"]["42"]["busy"] is None, "the file is repaired too"
+
+
+def test_a_busy_entry_with_a_non_numeric_started_is_dropped(tmp_path):
+    """The age math subtracts "started"; a string there would raise
+    TypeError just as surely as a missing session."""
+    path = tmp_path / ".state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "chats": {
+                    "42": {
+                        "busy": {"session": "ses_one", "started": "yesterday"},
+                    }
+                },
+            }
+        )
+    )
+    state = State(path, "/home/demo")
+    state.load()
+
+    assert state.busy("42") is None
+    assert state.orphaned_turns() == []
+
+
+def test_a_valid_busy_entry_passes_validation_untouched(tmp_path):
+    path = tmp_path / ".state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "chats": {
+                    "42": {
+                        "busy": {
+                            "session": "ses_one",
+                            "started": 1234.5,
+                            "extra": "junk",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    state = State(path, "/home/demo")
+    state.load()
+
+    assert state.busy("42") == {"session": "ses_one", "started": 1234.5}
+    orphans = state.orphaned_turns()
+    assert len(orphans) == 1
+    assert orphans[0][1]["session"] == "ses_one"
+
+
 def test_writes_are_atomic(tmp_path):
     state = State(tmp_path / ".state.json", "/home/demo")
     state.load()

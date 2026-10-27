@@ -37,7 +37,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-DEFAULT_MAX_AGE = 180.0  # comfortably above the 30s long-poll window
+# Covers the longest synchronous main-thread command (/search bottoms out
+# around 330s) with margin; the bridge also touches around every dispatch.
+DEFAULT_MAX_AGE = 360.0
 # Resolved once, absolutely: the timer runs with a sparse environment, and
 # an absolute binary keeps the audit trivial (/usr/bin on this machine).
 SYSTEMCTL = shutil.which("systemctl") or "/usr/bin/systemctl"

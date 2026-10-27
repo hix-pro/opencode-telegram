@@ -55,6 +55,9 @@ class FakeAPI:
         # Set False to simulate a shell the server reaps before it finishes.
         self.echo_sentinel = True
         self.shell_output_data = {"output": "hello\n", "status": "running"}
+        # Shells the server still lists, mirroring GET /api/shell. A reaped
+        # (or finished) shell disappears from this list.
+        self.shells = [{"id": "sh_1", "status": "running"}]
         for key, value in overrides.items():
             setattr(self, key, value)
 
@@ -208,6 +211,10 @@ class FakeAPI:
         if token and self.echo_sentinel and token not in data.get("output", ""):
             data["output"] = data.get("output", "") + f"\n{token} 0\n"
         return data
+
+    def list_shells(self, directory=None):
+        self._record("list_shells", directory)
+        return list(self.shells)
 
     def vcs_status(self, directory):
         return [{"state": "modified", "path": "README.md"}]
