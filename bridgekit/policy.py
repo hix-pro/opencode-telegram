@@ -12,6 +12,10 @@ anything; it force-rejects commands matching a deny-list regardless of the
 policy in force. Auto-approve without a guard is how a model eventually runs
 ``rm -rf`` on a typo, so the guard is the reason ``all`` mode is offered at
 all.
+
+The deny-list is best-effort by nature: any regex can be evaded (``base64``,
+shell aliases, a helper binary, quoting). It stops accidents, not a
+determined attempt.
 """
 
 from __future__ import annotations
@@ -25,8 +29,14 @@ ALL = "all"
 MODES = (ASK, READ, ALL)
 
 # Commands that are destructive enough to never auto-approve.
+#
+# The list is best-effort: any regex can be evaded (base64, aliases,
+# quoting), so it guards against accidents, not a determined attempt.
 DEFAULT_DENY = (
     r"\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rf]",
+    # Long flags read the same to rm; the short-cluster pattern above only
+    # ever saw ``rm -rf``, so ``rm --recursive /x`` used to sail through.
+    r"\brm\s+(?:.*\s)?--(?:recursive|force)(?:\s|$)",
     r"\bmkfs\b",
     r"\bdd\s+.*\bof=/dev/",
     r":\(\)\s*\{.*\};:",
@@ -37,6 +47,10 @@ DEFAULT_DENY = (
     r"\bwget\b[^|]*\|\s*(ba)?sh",
     r"\bsudo\b",
     r"\bgit\s+push\s+.*--force\b",
+    # ``-f`` (and clusters like -nf) as a standalone flag. ``--force`` is
+    # already covered above - including ``--force-with-lease``, which that
+    # pattern's trailing \b matches inside - kept blocked on purpose.
+    r"\bgit\s+push\s+(?:.*\s)?-[a-zA-Z]*f(?:\s|$)",
     r"\bgit\s+reset\s+--hard\b",
     r"\btruncate\b.*-s\s*0",
     r">\s*/dev/(sd|nvme|hd)",

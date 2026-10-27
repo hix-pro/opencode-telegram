@@ -141,13 +141,37 @@ class State:
             if not isinstance(entry, dict):
                 continue
             prefs = entry.get("prefs")
+            busy = self._valid_busy(entry.get("busy"))
+            if busy != entry.get("busy"):
+                # Drop the corruption from the file too, not just from memory.
+                self._dirty = True
             self._chats[str(chat_id)] = ChatState(
                 session=entry.get("session"),
                 directory=entry.get("directory") or self.default_dir,
-                busy=entry.get("busy") if isinstance(entry.get("busy"), dict) else None,
+                busy=busy,
                 updated=entry.get("updated", 0.0),
                 prefs=prefs if isinstance(prefs, dict) else {},
             )
+
+    @staticmethod
+    def _valid_busy(value) -> dict | None:
+        """Normalize a persisted busy marker, or None when it is unusable.
+
+        The docstring promise is that a corrupted file is survived: a hand
+        edit or a partial write from an older version can leave a busy entry
+        without a usable "session" (which orphan reporting indexes into) or
+        a non-numeric "started" (which the age math subtracts). Either would
+        raise inside Bridge.start() and restart-loop forever.
+        """
+        if not isinstance(value, dict):
+            return None
+        session = value.get("session")
+        started = value.get("started", 0.0)
+        if not (isinstance(session, str) and session.strip()):
+            return None
+        if not isinstance(started, (int, float)) or isinstance(started, bool):
+            return None
+        return {"session": session, "started": float(started)}
 
     def _migrate_legacy(self) -> None:
         """Adopt the old single-session .session.json, if present."""

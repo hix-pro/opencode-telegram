@@ -192,3 +192,107 @@ def test_allowed_roots_tolerate_spaces_after_commas(tmp_path):
     assert Path(tmp_path / "Desktop") in config.allowed_roots
     # A leading space used to resolve as a distinct (nonexistent) root.
     assert not any(str(root).lstrip() != str(root) for root in config.allowed_roots)
+
+
+# ------------------------------------------------ quoted values keep their " #"
+
+
+def test_a_quoted_value_with_a_hash_comment_is_preserved():
+    """A quoted value is one value: comment stripping must not truncate the
+    secret inside it ("hunter2 # Sekrit" used to arrive as "hunter2")."""
+    for raw in ('"hunter2 # Sekrit"', "'hunter2 # Sekrit'"):
+        config = Config.from_env(
+            {
+                "TELEGRAM_BOT_TOKEN": "123:abc",
+                "TELEGRAM_CHAT_ID": "42",
+                "OPENCODE_PASSWORD": raw,
+            }
+        )
+        assert config.password == raw
+
+
+def test_an_unquoted_value_with_a_trailing_comment_is_still_stripped():
+    config = Config.from_env(
+        {
+            "TELEGRAM_BOT_TOKEN": "123:abc",
+            "TELEGRAM_CHAT_ID": "42",
+            "OPENCODE_PASSWORD": "hunter2 # Sekrit",
+        }
+    )
+    assert config.password == "hunter2"
+
+
+# ------------------------------------------------- numeric range validation
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-4096"])
+def test_a_non_positive_max_chunk_is_rejected(value):
+    """MAX_CHUNK=0 was accepted and split_message produced a volley of
+    one-character chunks - a Telegram rate-limit hammer."""
+    with pytest.raises(ConfigError, match="MAX_CHUNK"):
+        Config.from_env(base_env(MAX_CHUNK=value))
+
+
+def test_a_positive_max_chunk_is_kept_and_clamped():
+    config = Config.from_env(base_env(MAX_CHUNK="100"))
+    assert config.max_chunk == 100
+    assert Config.from_env(base_env(MAX_CHUNK="99999")).max_chunk == 4096
+
+
+@pytest.mark.parametrize("value", ["0", "-60"])
+def test_a_non_positive_prompt_timeout_is_rejected(value):
+    """PROMPT_TIMEOUT<=0 put the deadline in the past, so every turn
+    reported "gave up waiting" immediately."""
+    with pytest.raises(ConfigError, match="PROMPT_TIMEOUT"):
+        Config.from_env(base_env(PROMPT_TIMEOUT=value))
+
+
+def test_a_positive_prompt_timeout_is_kept():
+    assert Config.from_env(base_env(PROMPT_TIMEOUT="3600")).prompt_timeout == 3600
+
+
+def test_a_non_positive_heads_up_after_is_rejected():
+    with pytest.raises(ConfigError, match="HEADS_UP_AFTER"):
+        Config.from_env(base_env(HEADS_UP_AFTER="0"))
+
+
+# ------------------------------------------------------- enum validation
+
+
+def test_an_unknown_approval_mode_is_rejected():
+    """A typo'd mode used to fall back to `ask` silently, so /status
+    described a mode the operator never chose."""
+    with pytest.raises(ConfigError, match="APPROVAL_MODE"):
+        Config.from_env(base_env(APPROVAL_MODE="yuolo"))
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("ask", "ask"),
+        ("read", "read"),
+        ("all", "all"),
+        ("ALL", "all"),
+        ("Read", "read"),
+        ("off", "ask"),
+        ("on", "read"),
+        ("full", "all"),
+    ],
+)
+def test_approval_mode_accepts_the_same_values_as_auto(raw, expected):
+    config = Config.from_env(base_env(APPROVAL_MODE=raw))
+    assert config.approval_mode == expected
+
+
+def test_an_unknown_prompt_delivery_is_rejected():
+    with pytest.raises(ConfigError, match="PROMPT_DELIVERY"):
+        Config.from_env(base_env(PROMPT_DELIVERY="interject"))
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("queue", "queue"), ("steer", "steer"), ("STEER", "steer")],
+)
+def test_prompt_delivery_accepts_the_same_values_as_delivery(raw, expected):
+    config = Config.from_env(base_env(PROMPT_DELIVERY=raw))
+    assert config.prompt_delivery == expected

@@ -195,16 +195,29 @@ def test_schedules_survive_a_reload():
 def test_remove_by_id_and_suffix():
     store = ScheduleStore()
     schedule = store.add("42", "hourly", "x")
-    assert store.remove(schedule.id).id == schedule.id
+    assert store.remove(schedule.id, "42").id == schedule.id
     with pytest.raises(KeyError):
-        store.remove("nope")
+        store.remove("nope", "42")
 
 
 def test_remove_by_short_suffix():
     store = ScheduleStore()
     schedule = store.add("42", "hourly", "x")
     short = schedule.id.split("_", 1)[1]
-    assert store.remove(short).id == schedule.id
+    assert store.remove(short, "42").id == schedule.id
+
+
+def test_remove_is_scoped_to_the_calling_chat():
+    """Listing is chat-scoped, and removal used not to be: any chat could
+    delete another chat's schedule by pasting its id."""
+    store = ScheduleStore()
+    store.add("43", "hourly", "other chat's job")
+    with pytest.raises(KeyError):
+        store.remove("43", "42")
+    assert len(store.items) == 1, "another chat's schedule is untouched"
+    # The owner can still remove it, by id or suffix.
+    schedule = store.add("42", "hourly", "mine")
+    assert store.remove(schedule.id[-8:], "42").id == schedule.id
 
 
 def test_corrupt_entries_are_skipped():
@@ -250,6 +263,21 @@ def test_schedule_command_removes(ctx):
     assert "No schedules" in run(ctx, "/schedule list")
 
 
+def test_schedule_command_cannot_remove_another_chats_schedule(ctx):
+    """/schedule rm from chat A must not delete chat B's schedule; the
+    friendly not-found message is the same either way."""
+    from bridgekit.commands import CommandError, run
+
+    foreign = ctx.schedules.add("43", "hourly", "not yours")
+    with pytest.raises(CommandError, match="No schedule matching"):
+        run(ctx, f"/schedule rm {foreign.id}")
+    assert foreign in ctx.schedules.items
+
+    # The owning chat removes it through the same command.
+    ctx.chat_id = "43"
+    assert "Removed" in run(ctx, f"/schedule rm {foreign.id}")
+
+
 def test_schedule_command_rejects_a_bad_spec(ctx):
     from bridgekit.commands import CommandError, run
 
@@ -280,5 +308,5 @@ def test_added_schedules_never_share_an_id():
     first = store.add("42", "daily 09:00", "standup notes")
     second = store.add("43", "hourly", "check the queue")
     assert first.id != second.id
-    store.remove(second.id)
+    store.remove(second.id, "43")
     assert first.id in {s.id for s in store.items}

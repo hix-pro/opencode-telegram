@@ -25,6 +25,19 @@ def test_common_secret_paths_are_named():
     assert reason(Path("/home/me/bridge.log.1")) == "bridge log"
 
 
+def test_case_variants_of_sensitive_paths_are_refused_too():
+    """On case-insensitive filesystems (macOS, Windows) ``.SSH`` *is*
+    ``.ssh``; the exact-case comparison used to let it bypass the guard."""
+    assert reason(Path("/home/me/.SSH/id_rsa")) == ".ssh directory"
+    assert reason(Path("/home/me/ID_RSA")) == "credential or runtime file"
+    assert reason(Path("/home/me/.ENV")) == "environment file"
+    assert reason(Path("/home/me/.CONFIG/opencode/auth.json")) == (
+        ".config/opencode directory"
+    )
+    # Exact-case keeps its original reason.
+    assert reason(Path("/home/me/.ssh/id_rsa")) == ".ssh directory"
+
+
 def test_the_example_file_and_ordinary_project_files_are_allowed():
     assert reason(Path("/home/me/project/.env.example")) is None
     assert reason(Path("/home/me/project/notes.md")) is None

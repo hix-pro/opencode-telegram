@@ -474,8 +474,9 @@ This bridge is a remote shell. Treat these as non-negotiable:
 - **`/auto all` is guarded, not sandboxed.** A deny-list of destructive
   commands (`rm -rf`, `mkfs`, `curl | sh`, `sudo`, `git push --force`, ...) is
   force-rejected regardless of the approval mode. `/guard` shows and edits it.
-  Regexes cannot cover every shell construction: the guard prevents accidents,
-  not a determined attack.
+  The list is best-effort: regexes cannot cover every shell construction, and
+  indirection such as `base64`, shell aliases or a helper binary can evade any
+  pattern. The guard prevents accidents, not a determined attack.
 - **Attachments are cached on disk.** Files you send are copied to
   `.attachments` beside the state file (owner-only `0700`/`0600`) and pruned
   after `ATTACHMENT_MAX_AGE_HOURS` (24 by default).

@@ -123,15 +123,22 @@ def session_list_markup(sessions: list, active_id: str | None = None) -> dict | 
 
 
 def permission_buttons(request_id: str) -> dict:
-    return keyboard(
-        [
-            [
-                ("Allow once", encode("perm_yes", request_id)),
-                ("Always allow", encode("perm_always", request_id)),
-                ("Reject", encode("perm_no", request_id)),
-            ]
-        ]
-    )
+    """Approve / always-approve / reject, unless the payload would truncate.
+
+    Telegram caps callback data at 64 bytes and :func:`encode` truncates
+    silently: with a long request id the "always allow" button decoded to a
+    cut-off id, answered "no longer pending", and left the agent blocked with
+    a dead button on screen. When the round-trip no longer returns the id,
+    the button is omitted; Allow once and Reject remain.
+    """
+    rows = [
+        ("Allow once", encode("perm_yes", request_id)),
+        ("Reject", encode("perm_no", request_id)),
+    ]
+    always = encode("perm_always", request_id)
+    if decode(always) == ("perm_always", request_id):
+        rows.insert(1, ("Always allow", always))
+    return keyboard([rows])
 
 
 def session_buttons(session_id: str) -> dict:

@@ -445,7 +445,9 @@ class OpenCode:
         if "#" in model:
             model, variant = model.split("#", 1)
         provider, _, model_id = model.partition("/")
-        if not model_id:
+        if not provider or not model_id:
+            # An empty provider used to reach the server as {"providerID": "",
+            # "id": "model"} and come back as a raw API error.
             raise ValueError(
                 f"Model must look like provider/model, got {model!r}. "
                 "Use /models to list them."

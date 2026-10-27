@@ -164,9 +164,17 @@ class ScheduleStore:
         self.items.append(schedule)
         return schedule
 
-    def remove(self, ref: str) -> Schedule:
+    def remove(self, ref: str, chat_id: str) -> Schedule:
+        """Remove *ref* from *chat_id*'s schedules.
+
+        Listing is chat-scoped, and so is removal: without the chat filter a
+        chat could delete another chat's schedule by id - a ref from another
+        conversation's /schedule list is not this chat's to manage.
+        """
         ref = ref.strip()
         for index, schedule in enumerate(self.items):
+            if schedule.chat_id != chat_id:
+                continue
             if schedule.id == ref or schedule.id.endswith(f"_{ref}"):
                 return self.items.pop(index)
         raise KeyError(ref)

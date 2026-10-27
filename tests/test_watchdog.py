@@ -9,17 +9,27 @@ import scripts.heartbeat_watchdog as watchdog
 
 
 def test_the_decision_matrix_covers_every_case():
+    limit = watchdog.DEFAULT_MAX_AGE
     # Healthy: a fresh heartbeat under an active unit.
-    assert watchdog.decide(True, True, 600.0, 5.0, 180.0) == "fresh"
+    assert watchdog.decide(True, True, 600.0, 5.0, limit) == "fresh"
     # A unit systemd does not count as running is never our problem.
-    assert watchdog.decide(True, False, 0.0, 10_000.0, 180.0) == "inactive"
-    assert watchdog.decide(False, False, 0.0, None, 180.0) == "inactive"
+    assert watchdog.decide(True, False, 0.0, 10_000.0, limit) == "inactive"
+    assert watchdog.decide(False, False, 0.0, None, limit) == "inactive"
     # Just booted, no heartbeat yet: warming, not restarting.
-    assert watchdog.decide(False, True, 10.0, None, 180.0) == "warming"
+    assert watchdog.decide(False, True, 10.0, None, limit) == "warming"
     # Up forever without a single heartbeat - wedged before the first poll.
-    assert watchdog.decide(False, True, 600.0, None, 180.0) == "restart"
+    assert watchdog.decide(False, True, 600.0, None, limit) == "restart"
     # The headline case: running unit, silent heartbeat.
-    assert watchdog.decide(True, True, 600.0, 1_000.0, 180.0) == "restart"
+    assert watchdog.decide(True, True, 600.0, 1_000.0, limit) == "restart"
+
+
+def test_the_default_max_age_covers_the_longest_synchronous_command():
+    """Commands dispatched on the poll thread used to outlive the old 180s
+    limit: /search can run ~330s, and the watchdog restarted a healthy
+    bridge mid-command. The default must clear that with margin."""
+    assert watchdog.DEFAULT_MAX_AGE > 330
+    # And it must still catch a genuinely wedged bridge reasonably fast.
+    assert watchdog.DEFAULT_MAX_AGE <= 600
 
 
 def test_a_silent_bridge_gets_restarted(tmp_path, monkeypatch):

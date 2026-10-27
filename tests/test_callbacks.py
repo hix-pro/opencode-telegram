@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 
 import pytest
 
@@ -396,3 +397,30 @@ def test_a_failing_handler_does_not_escape(bridge):
     bridge.router.on("boom")(explode)
     press(bridge, "boom:x")  # must not raise out of _handle_callback
     assert bridge.telegram.answered
+
+
+# ------------------------------------------------------------ orphaned turns
+
+
+def _orphan(turn: dict):
+    return lambda older_than=0.0: [(CHAT, turn)]
+
+
+def test_an_orphaned_turn_without_a_session_is_skipped(bridge, monkeypatch):
+    """A corrupted busy entry (no session) used to raise KeyError inside
+    Bridge.start() and restart-loop the service; the report now skips it."""
+    monkeypatch.setattr(
+        bridge.state, "orphaned_turns", _orphan({"started": time.time() - 120})
+    )
+    bridge._report_orphaned_turns()  # must not raise
+    assert bridge.telegram.sent == []
+
+
+def test_a_real_orphaned_turn_is_still_reported(bridge, monkeypatch):
+    monkeypatch.setattr(
+        bridge.state,
+        "orphaned_turns",
+        _orphan({"session": "ses_aaaaaaaaaaaa1111", "started": time.time() - 120}),
+    )
+    bridge._report_orphaned_turns()
+    assert any("restarted" in text for text in bridge.telegram.sent)

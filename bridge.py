@@ -185,10 +185,16 @@ class Bridge:
             self.state.clear_busy(chat_id)
             if chat_id not in self.config.allowed_chats:
                 continue
+            # State loading already validates busy entries, but belt and
+            # braces: a turn without a session has nothing to ask about, and
+            # raising here would crash every boot into a restart loop.
+            session_id = turn.get("session")
+            if not session_id:
+                continue
             minutes = max(1, int((time.time() - (turn.get("started") or 0)) / 60))
             still_running = False
             try:
-                messages = self.api.messages(turn["session"], limit=10, order="desc")
+                messages = self.api.messages(session_id, limit=10, order="desc")
                 still_running = not any(
                     m.get("type") == "idle"
                     and (m.get("time") or {}).get("created", 0) > (turn.get("started") or 0)
@@ -413,6 +419,12 @@ class Bridge:
                     log.warning("Ignoring update without a valid id: %r", update)
                     continue
                 offset = update_id + 1
+                # Touch again around the dispatch itself: a synchronous handler
+                # (/selftest, /search) can run for minutes on the poll thread,
+                # and the per-iteration touch above is stale by the time it
+                # returns - the watchdog read that as a wedge and restarted a
+                # healthy bridge mid-command.
+                self._touch_heartbeat()
                 try:
                     self._handle_update(update)
                 except Exception:
@@ -420,6 +432,8 @@ class Bridge:
                     # Log it and advance the offset, or Telegram redelivers the
                     # same poison update on every restart.
                     log.exception("Update %s failed; skipping it", update_id)
+                finally:
+                    self._touch_heartbeat()
                 # Per update, not per batch: a crash mid-batch used to forfeit
                 # the acknowledged position of every update already handled in
                 # it, so those were replayed as duplicate turns on restart.
@@ -549,6 +563,9 @@ class Bridge:
 
 
 def main() -> int:
+    # Fresh files - rotated logs, attachment downloads - must not be
+    # world-readable when the bridge runs without systemd's UMask=0077.
+    os.umask(0o077)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
 
     # The journal is volatile on some machines, so keep a rotating copy that

@@ -27,6 +27,13 @@ def test_model_ref_rejects_a_bare_model_name():
         OpenCode._model_ref("claude-haiku-5-5")
 
 
+def test_model_ref_rejects_an_empty_provider():
+    """/model alone used to build {"providerID": "", "id": "model"} and get a
+    raw API error back; it is refused with the usage message instead."""
+    with pytest.raises(ValueError, match="provider/model"):
+        OpenCode._model_ref("/model")
+
+
 def test_permission_decisions_are_constrained():
     api = OpenCode("http://127.0.0.1:1", "pw")
     with pytest.raises(ValueError, match="Invalid permission decision"):

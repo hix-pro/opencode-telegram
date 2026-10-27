@@ -36,7 +36,9 @@ def cmd_schedule(ctx: core.Context) -> str:
         # Ids get copy-pasted with trailing punctuation from /schedule list.
         ref = rest.strip().strip(".,:;")
         try:
-            removed = schedules.remove(ref)
+            # Chat-scoped like the listing: a ref from another conversation's
+            # list used to be removable from here.
+            removed = schedules.remove(ref, ctx.chat_id)
         except KeyError:
             raise core.CommandError(
                 f"No schedule matching {rest!r}. /schedule list shows them."

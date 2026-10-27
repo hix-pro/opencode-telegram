@@ -72,19 +72,25 @@ def reason(path: Path) -> str | None:
     The path should already be resolved (symlinks followed), otherwise a
     harmless-looking link could point at ``.ssh/id_ed25519`` and evade the
     check.
+
+    Sensitive names and directories match case-folded: on case-insensitive
+    filesystems (macOS, Windows) ``.SSH`` *is* ``.ssh``, and the exact-case
+    comparison used to let it through. The one exemption, ``.env.example``,
+    stays exact-case - allowing less is the safe direction.
     """
     name = path.name
+    folded = name.lower()
 
     # The checked-in template is documentation, not a secret.  Allow only the
     # exact example; ``.env.local`` and friends remain blocked.
     if name == ".env.example":
         return None
-    if name == ".env" or name.startswith(".env."):
+    if folded == ".env" or folded.startswith(".env."):
         return "environment file"
-    if name == "bridge.log" or name.startswith("bridge.log."):
+    if folded == "bridge.log" or folded.startswith("bridge.log."):
         return "bridge log"
 
-    parts = path.parts
+    parts = tuple(part.lower() for part in path.parts)
     for directory in SENSITIVE_DIRS:
         if directory in parts:
             return f"{directory} directory"
@@ -92,6 +98,6 @@ def reason(path: Path) -> str | None:
         for index in range(len(parts) - 1):
             if parts[index] == left and parts[index + 1] == right:
                 return f"{left}/{right} directory"
-    if name in SENSITIVE_NAMES:
+    if folded in SENSITIVE_NAMES:
         return "credential or runtime file"
     return None
