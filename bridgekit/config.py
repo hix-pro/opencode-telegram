@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .pathguard import reason as sensitive_reason
-from .policy import ALL, ASK, MODES as APPROVAL_MODES, READ
+from .policy import ALL, ASK, READ
+from .policy import MODES as APPROVAL_MODES
 
 DEFAULT_URL = "http://127.0.0.1:49374"
 MAX_CHUNK = 4096
