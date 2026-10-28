@@ -644,3 +644,5 @@ model and agent. Change it per conversation with `/model` and `/agent`.
 ---
 
 _Part of the **[hix tools](https://github.com/hix-pro#readme)** suite — local-first, no backend, CI-ready._
+
+**Deep dive:** [Remote-controlling OpenCode from Telegram](https://hix-pro.github.io/blog/posts/06-opencode-telegram-remote-control.html)
