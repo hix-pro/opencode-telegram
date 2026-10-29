@@ -3,6 +3,7 @@
 [![CI](https://github.com/hix-pro/opencode-telegram/actions/workflows/ci.yml/badge.svg)](https://github.com/hix-pro/opencode-telegram/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/hix-pro/opencode-telegram)](https://github.com/hix-pro/opencode-telegram/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/hix-pro/opencode-telegram)](LICENSE)
+[![Container](https://github.com/hix-pro/opencode-telegram/actions/workflows/container.yml/badge.svg)](https://github.com/hix-pro/opencode-telegram/actions/workflows/container.yml)
 
 > This project is not built by the OpenCode team and is not affiliated with
 > them in any way. It is an independent community tool that talks to the
@@ -89,6 +90,18 @@ To run it in the foreground instead:
 set -a && . ./.env && set +a
 python3 bridge.py
 ```
+
+Or run the published container. It contains the bridge only; the OpenCode
+server stays on the host:
+
+```bash
+export PROJECT_DIR="$HOME/projects"   # absolute host path
+docker compose up -d
+docker compose logs -f
+```
+
+See [docs/DOCKER.md](docs/DOCKER.md) for networking, volumes, upgrades, and
+macOS/Windows notes.
 
 **5. Check it.**
 
@@ -456,6 +469,9 @@ This bridge is a remote shell. Treat these as non-negotiable:
   Every update type is checked: the chat *and* the sender must be on the
   allow-list. In a private chat both are the same id; to use a group, list the
   group id and each authorized user id — being a member is not enough.
+- **The container is not a sandbox.** The image packages the bot process, not
+  the agent. OpenCode still runs on the host and executes commands there with
+  your account; see [docs/DOCKER.md](docs/DOCKER.md#security).
 - **`ALLOWED_ROOTS` is optional but recommended.** Empty means sessions may
   target any directory on the machine, mirroring your terminal; the bridge
   warns about that at startup and during install. Set it to confine the
@@ -504,11 +520,13 @@ OS user (`scripts/migrate-dedicated-user.sh`).
 
 ## Requirements
 
-- **Linux with systemd.** The installer generates systemd *user* units and a
-  watchdog timer on it, and the watchdog needs systemd's timer units. Tested
-  only on Linux: CI runs on Ubuntu, and the reference deployment is
-  Ubuntu 24.04. macOS and Windows are untested.
-- Python 3.10+ and `requests`
+- **Linux with systemd for `install.sh`.** The installer generates systemd
+  *user* units and a watchdog timer, and the watchdog needs systemd's timer
+  units. Tested only on Linux: CI runs on Ubuntu, and the reference deployment
+  is Ubuntu 24.04. macOS and Windows are untested for the installer.
+- **Or Docker** on any OS that runs Linux containers. The published image
+  bundles Python and `requests`; the OpenCode server stays on the host.
+- Python 3.10+ and `requests` for a source install
 - An OpenCode server reachable at `OPENCODE_URL`
 - A server password: `opencode service set password "<secret>"`
 
@@ -562,6 +580,7 @@ Layout:
 | `bridgekit/attachments.py` | Photo, document, and voice handling |
 | `bridgekit/keyboards.py` | Inline keyboards and callback routing |
 | `bridgekit/localfs.py` | Local file access for /ls /read /find /write |
+| `Dockerfile`, `compose.yaml`, `docs/DOCKER.md` | Container image and compose deployment |
 | `systemd/` | Unit templates - install.sh renders them into your user manager |
 | `install.sh`, `uninstall.sh` | Install or remove the service |
 | `tests/test_live.py` | Opt-in contract checks against a real server |
@@ -596,8 +615,9 @@ calling `getUpdates` with the same token. Stop the other process.
 or `~/.config/opencode/service.json`.
 
 **"Could not reach OpenCode"** — check `opencode service status` and confirm the
-URL and port match. It binds to `127.0.0.1` only by default, which is correct:
-the bridge runs on the same machine.
+URL and port match. It binds to `127.0.0.1` only by default, which is correct
+when the bridge runs on the same machine. In Docker, use host networking on
+Linux or `host.docker.internal` on Docker Desktop.
 
 **Replies never arrive** — the turn may still be running. The hard cap is 2h by
 default and a heads-up fires after 4 minutes; `/abort` stops it immediately.
