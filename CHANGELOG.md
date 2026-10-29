@@ -14,8 +14,9 @@
 - A CI smoke job builds the image on pull requests and verifies the import and
   the unprivileged user.
 - A PyPI trusted-publishing workflow. Every release builds and checks the
-  sdist and wheel; uploading stays off until the `PYPI_PUBLISH` repository
-  variable is `true` and the PyPI pending publisher is configured.
+  sdist and wheel, then attaches both to the GitHub release. Uploading to PyPI
+  stays off until the `PYPI_PUBLISH` repository variable is `true` and the
+  pending publisher is configured.
 
 ### Changed
 

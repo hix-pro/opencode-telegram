@@ -547,9 +547,9 @@ shellcheck, a full-history secret scan, and CodeQL. A self-hosted live job is
 available but disabled by default; see [docs/LIVE_TESTING.md](docs/LIVE_TESTING.md).
 
 Build the distribution with `python -m build`. It installs `bridge`,
-`bridgekit`, and the `opencode-telegram` entry point. PyPI upload is prepared
-with trusted publishing and stays off until the `PYPI_PUBLISH` repository
-variable is `true`.
+`bridgekit`, and the `opencode-telegram` entry point. Releases attach the
+sdist and wheel as assets; PyPI upload is prepared with trusted publishing and
+stays off until the `PYPI_PUBLISH` repository variable is `true`.
 
 The pre-commit hook runs all of these: style, types, the security scan, and
 the offline suite. `mypy`/`bandit` skip themselves with a note if they are

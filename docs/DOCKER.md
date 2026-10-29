@@ -74,6 +74,32 @@ these defaults:
 absolute path. The compose file mounts it that way. `ALLOWED_ROOTS`, when set,
 must use those same host paths.
 
+## File permissions
+
+The image runs as UID `10001`. A bind-mounted project owned by your host user
+is normally readable by that UID but not writable, so `/write` fails while the
+agent (which runs on the host) can still edit files. Mount read-only if you
+only need inspection.
+
+To allow `/write` as well, run the container as your host UID/GID and give it a
+data directory you own:
+
+```bash
+mkdir -p data
+export HOST_UID="$(id -u)" HOST_GID="$(id -g)"
+```
+
+```yaml
+services:
+  bridge:
+    user: "${HOST_UID}:${HOST_GID}"
+    volumes:
+      - ./data:/data
+```
+
+The agent still runs on the host as your normal user; this only changes the
+bridge process and the files it can write directly.
+
 ## Security
 
 Containerizing the bridge does **not** sandbox the agent. The OpenCode server
