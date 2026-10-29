@@ -25,6 +25,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -42,6 +44,14 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+
+      # The wheel and sdist are useful even while PyPI publishing is gated,
+      # and a release should be installable from its own assets.
+      - name: Attach packages to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
 
   publish:
     needs: build
