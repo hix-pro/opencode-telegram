@@ -5,12 +5,13 @@ The bridge talks to the local OpenCode HTTP API, not to a Python package, so
 
 | Component | Supported / tested |
 |---|---|
-| OS | Linux (Ubuntu; CI on ubuntu-latest, reference deployment on Ubuntu 24.04); macOS and Windows untested |
-| Bridge | v2.3.8 |
+| OS | Linux (Ubuntu; CI on ubuntu-latest, reference deployment on Ubuntu 24.04); macOS and Windows untested outside Docker |
+| Container | `linux/amd64` and `linux/arm64`; amd64 smoke-tested in CI |
+| Bridge | v2.4.0 |
 | Python | 3.10, 3.11, 3.12, 3.13, 3.14 (CI matrix); 3.12 on the reference deployment |
 | OpenCode server | 2.1.2 (live suite, 2026-10-23) |
 | Telegram Bot API | long polling; `message_reaction` updates for reaction approval |
-| OS | Linux with systemd user services (reference: Ubuntu 24.04) |
+| Service manager | systemd user services for `install.sh` (reference: Ubuntu 24.04) |
 
 ## How this table is produced
 

@@ -1,0 +1,39 @@
+# Docker Compose for the bridge on Linux.
+#
+# The OpenCode server runs on the host, so this uses host networking: the
+# bridge reaches http://127.0.0.1:49374 exactly as it would outside Docker.
+#
+#   export PROJECT_DIR="$HOME/projects"   # absolute path on the host
+#   docker compose up -d
+#
+# The project directory is mounted at the same absolute path inside the
+# container because /read, /find, /write, and /ls run in the bridge process.
+# PROJECT_DIR must also be a path the OpenCode server can see on the host.
+#
+# macOS and Windows: remove network_mode, publish no ports (the bridge only
+# makes outbound calls), and set OPENCODE_URL=http://host.docker.internal:49374
+# plus extra_hosts. Docker Desktop shares host paths at the same absolute path.
+
+services:
+  bridge:
+    image: ghcr.io/hix-pro/opencode-telegram:latest
+    pull_policy: always
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      OPENCODE_URL: ${OPENCODE_URL:-http://127.0.0.1:49374}
+      PROJECT_DIR: ${PROJECT_DIR:?Set PROJECT_DIR to an absolute host path}
+      STATE_FILE: /data/state.json
+      LOG_FILE: /data/bridge.log
+    volumes:
+      - bridge-data:/data
+      - ${PROJECT_DIR}:${PROJECT_DIR}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  bridge-data:

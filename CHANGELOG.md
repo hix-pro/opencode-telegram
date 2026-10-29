@@ -1,6 +1,25 @@
 # Changelog
 
-## [Unreleased]
+## v2.4.0 — 2026-10-29
+
+### Added
+
+- **A published container image.** `ghcr.io/hix-pro/opencode-telegram` is built
+  for `linux/amd64` and `linux/arm64` from `v*` tags, with `edge` from
+  `master`. The image runs as UID 10001, keeps state and logs in `/data`, and
+  ships a `compose.yaml` example. See `docs/DOCKER.md`.
+- **An installable package and `opencode-telegram` console entry point.** The
+  wheel contains `bridge.py` and `bridgekit`; `python -m build` and
+  `pip install` now work without a checkout.
+- A CI smoke job builds the image on pull requests and verifies the import and
+  the unprivileged user.
+
+### Changed
+
+- **The distribution is named `opencode-telegram`.** It was previously
+  `opencode-bridge`, a name already taken on PyPI by an unrelated project and
+  never published. The repository, service, and Docker image names are
+  unchanged.
 
 ### Fixed
 

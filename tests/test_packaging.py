@@ -82,6 +82,10 @@ def test_example_values_are_accepted():
         # Explicit password: the loader otherwise falls back to the machine's
         # ~/.config/opencode/service.json, absent on a clean CI runner.
         "OPENCODE_PASSWORD": "secret",
+        # The example's ALLOWED_ROOTS=~ must contain the default project
+        # directory even when the checkout itself lives outside $HOME (for
+        # example, a review copy under /tmp).
+        "PROJECT_DIR": str(Path.home()),
     }
     for name, value in documented_pairs().items():
         Config.from_env({**base, name: value})
