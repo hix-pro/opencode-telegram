@@ -13,6 +13,9 @@
   `pip install` now work without a checkout.
 - A CI smoke job builds the image on pull requests and verifies the import and
   the unprivileged user.
+- A PyPI trusted-publishing workflow. Every release builds and checks the
+  sdist and wheel; uploading stays off until the `PYPI_PUBLISH` repository
+  variable is `true` and the PyPI pending publisher is configured.
 
 ### Changed
 
